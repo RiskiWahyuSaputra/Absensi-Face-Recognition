@@ -26,7 +26,22 @@ Implementasi lengkap **Fase 1 (MVP)** sesuai dokumen **PRD Sistem Absensi Face R
 - **Ekspor Rekap Bulanan**: Ekspor langsung ke **Excel (`.xlsx`)** dan **CSV**.
 - **Keamanan & UU PDP**: Vektor wajah dienkripsi **AES-256-GCM** dengan kunci di luar database (`FACE_ENCRYPTION_KEY`), token unik per perangkat kiosk (bisa dicabut bila tablet hilang) + rate limiting, pembersihan otomatis foto bukti > 90 hari, dan log audit akses data biometrik.
 
-## Cara Menjalankan dengan Docker Compose (Direkomendasikan untuk VPS)
+## Cara Menjalankan dengan Supabase (Tanpa Docker / Testing Lokal)
+
+1. Buat project di [Supabase](https://supabase.com) (pilih region **Singapore `ap-southeast-1`** agar latensi rendah).
+2. Ambil **Connection String (URI)** dari *Supabase Dashboard → Connect → Session Pooler (port 5432)*.
+3. Salin `.env.example` menjadi `backend/.env` dan isi `DATABASE_URL` serta `DATABASE_SSL=true`.
+4. Jalankan migrasi skema & seed akun demo langsung dari terminal (otomatis membuat tabel + ekstensi `pgvector` + akun demo):
+   ```bash
+   cd backend && npm run db:migrate
+   ```
+   *(Atau copy-paste isi `database/init.sql` ke **Supabase SQL Editor** lalu jalankan).*
+5. Jalankan 3 layanan lokal:
+   - **Face Service**: `cd face-service && python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt && python scripts/download_models.py --output-dir models && uvicorn app.main:app --port 8000`
+   - **Backend**: `cd backend && npm run dev`
+   - **Frontend**: `cd frontend && npm run dev` (buka `http://localhost:5173`)
+
+## Cara Menjalankan dengan Docker Compose (Produksi VPS)
 
 1. Salin konfigurasi environment dan ganti semua kunci rahasia:
    ```bash

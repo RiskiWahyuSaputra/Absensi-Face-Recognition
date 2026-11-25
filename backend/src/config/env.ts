@@ -7,7 +7,10 @@ export const env = {
   nodeEnv: process.env.NODE_ENV || "development",
   databaseUrl:
     process.env.DATABASE_URL ||
-    "postgresql://absensi_user:change_this_strong_db_password@localhost:5432/absensi_face",
+    "postgresql://postgres:[YOUR-PASSWORD]@db.[YOUR-PROJECT-REF].supabase.co:5432/postgres",
+  databaseSsl:
+    process.env.DATABASE_SSL === "true" ||
+    (process.env.DATABASE_URL || "").includes("supabase"),
   faceEncryptionKey:
     process.env.FACE_ENCRYPTION_KEY ||
     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",

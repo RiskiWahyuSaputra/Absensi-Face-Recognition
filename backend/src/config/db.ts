@@ -3,9 +3,10 @@ import { env } from "./env";
 
 export const pool = new Pool({
   connectionString: env.databaseUrl,
-  max: 20,
+  ssl: env.databaseSsl ? { rejectUnauthorized: false } : undefined,
+  max: 15,
   idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 5000,
+  connectionTimeoutMillis: 10000,
 });
 
 export async function query<T extends QueryResultRow = QueryResultRow>(

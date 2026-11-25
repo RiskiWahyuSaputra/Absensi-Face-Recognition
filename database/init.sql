@@ -1,9 +1,9 @@
 -- ==============================================================================
 -- Sistem Absensi Face Recognition - PostgreSQL 16 + pgvector Schema
--- Sesuai PRD & Kepatuhan UU PDP No. 27/2022
+-- Kompatibel dengan Supabase PostgreSQL & Docker PostgreSQL (UU PDP No. 27/2022)
 -- ==============================================================================
 
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 CREATE EXTENSION IF NOT EXISTS vector;
 
 -- 1. Pengaturan Sistem (ambang kecocokan, liveness, aturan absen)
@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS system_settings (
 
 -- 2. Shift Kerja
 CREATE TABLE IF NOT EXISTS shifts (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name VARCHAR(100) NOT NULL UNIQUE,
     start_time TIME NOT NULL,
     end_time TIME NOT NULL,
@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS shifts (
 
 -- 3. Hari Libur Nasional / Kantor
 CREATE TABLE IF NOT EXISTS holidays (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     holiday_date DATE NOT NULL UNIQUE,
     name VARCHAR(150) NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS holidays (
 -- 4. Karyawan & Pengguna Sistem
 -- Role: employee, supervisor, hr_admin, it_admin
 CREATE TABLE IF NOT EXISTS employees (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     nik VARCHAR(50) NOT NULL UNIQUE,
     full_name VARCHAR(150) NOT NULL,
     email VARCHAR(150) NOT NULL UNIQUE,
@@ -67,7 +67,7 @@ CREATE INDEX IF NOT EXISTS idx_employees_active ON employees(is_active);
 -- Kolom pgvector opsional disediakan untuk arsitektur skala besar bila diaktifkan,
 -- namun secara default hanya embedding_encrypted yang terisi demi keamanan AES-256.
 CREATE TABLE IF NOT EXISTS face_embeddings (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     employee_id UUID NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
     pose_label VARCHAR(50) NOT NULL DEFAULT 'front',
     embedding_encrypted TEXT NOT NULL, -- Format: iv_hex:authTag_hex:ciphertext_hex (AES-256-GCM)
@@ -82,7 +82,7 @@ CREATE INDEX IF NOT EXISTS idx_face_embeddings_employee ON face_embeddings(emplo
 
 -- 6. Perangkat Kiosk (Token unik per perangkat, bisa dicabut bila tablet hilang)
 CREATE TABLE IF NOT EXISTS kiosks (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     device_code VARCHAR(50) NOT NULL UNIQUE,
     name VARCHAR(120) NOT NULL,
     location VARCHAR(150) NOT NULL,
@@ -97,7 +97,7 @@ CREATE TABLE IF NOT EXISTS kiosks (
 
 -- 7. Log Absensi Harian (F-03, F-04, F-05)
 CREATE TABLE IF NOT EXISTS attendance_logs (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     employee_id UUID NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
     kiosk_id UUID REFERENCES kiosks(id) ON DELETE SET NULL,
     attendance_date DATE NOT NULL,
@@ -124,7 +124,7 @@ CREATE INDEX IF NOT EXISTS idx_attendance_review ON attendance_logs(needs_hr_rev
 
 -- 8. Koreksi Absensi & Audit Persetujuan Atasan
 CREATE TABLE IF NOT EXISTS attendance_corrections (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     employee_id UUID NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
     attendance_log_id UUID REFERENCES attendance_logs(id) ON DELETE SET NULL,
     attendance_date DATE NOT NULL,
@@ -145,7 +145,7 @@ CREATE INDEX IF NOT EXISTS idx_corrections_status ON attendance_corrections(stat
 
 -- 9. Log Akses Data Biometrik (UU PDP: hanya Admin HR & Admin IT, semua akses tercatat)
 CREATE TABLE IF NOT EXISTS biometric_access_logs (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     actor_id UUID REFERENCES employees(id) ON DELETE SET NULL,
     actor_role VARCHAR(30) NOT NULL,
     action VARCHAR(80) NOT NULL, -- e.g. ENROLL_FACE, DELETE_FACE, DEACTIVATE_EMPLOYEE, VIEW_STATUS, UPDATE_THRESHOLD
