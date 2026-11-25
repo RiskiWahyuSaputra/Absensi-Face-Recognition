@@ -1,0 +1,10 @@
+{
+  "name": "Absensi Face Recognition Kiosk & HR",
+  "short_name": "Absensi Wajah",
+  "start_url": "/kiosk",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0f172a",
+  "theme_color": "#0f172a",
+  "description": "Sistem Absensi Pengenalan Wajah On-Premise / VPS (OpenCV YuNet + SFace)"
+}
