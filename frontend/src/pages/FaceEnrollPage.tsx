@@ -30,41 +30,39 @@ export const FaceEnrollPage: React.FC = () => {
   const [verifyResult, setVerifyResult] = useState<string>("");
 
   useEffect(() => {
-    let cancelled = false;
-    let stream: MediaStream | null = null;
+    let activeStream: MediaStream | null = null;
 
-    navigator.mediaDevices
-      .getUserMedia({
-        video: {
-          facingMode: "user",
-          width: { ideal: 640 },
-          height: { ideal: 480 },
-        },
-        audio: false,
-      })
-      .then((s) => {
-        if (cancelled) {
-          s.getTracks().forEach((t) => t.stop());
-          return;
+    async function initCamera() {
+      try {
+        let s: MediaStream;
+        try {
+          s = await navigator.mediaDevices.getUserMedia({
+            video: { width: { ideal: 640 }, height: { ideal: 480 } },
+            audio: false,
+          });
+        } catch {
+          s = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
         }
-        stream = s;
+        activeStream = s;
         if (videoRef.current) {
           videoRef.current.srcObject = s;
-          videoRef.current.play().catch(() => {});
+          await videoRef.current.play().catch(() => {});
         }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setFeedback("Gagal mengakses kamera. Pastikan izin kamera aktif dan tidak dipakai tab lain.");
-        }
-      });
+      } catch (err) {
+        const msg = err instanceof Error ? `${err.name}: ${err.message}` : "";
+        setFeedback(`Gagal mengakses kamera (${msg}). Pastikan izin kamera aktif dan tidak dipakai tab lain.`);
+      }
+    }
+
+    initCamera();
 
     return () => {
-      cancelled = true;
+      activeStream?.getTracks().forEach((t) => t.stop());
       if (videoRef.current) {
+        const cur = videoRef.current.srcObject as MediaStream | null;
+        cur?.getTracks().forEach((t) => t.stop());
         videoRef.current.srcObject = null;
       }
-      stream?.getTracks().forEach((t) => t.stop());
     };
   }, []);
 

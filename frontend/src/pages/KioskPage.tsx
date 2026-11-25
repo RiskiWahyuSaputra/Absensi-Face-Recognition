@@ -67,48 +67,56 @@ export const KioskPage: React.FC = () => {
     };
   }, []);
 
-  // Start webcam (React 18 StrictMode safe + explicit play)
-  useEffect(() => {
-    let cancelled = false;
-    let stream: MediaStream | null = null;
+  // Start webcam (single acquire + fallback simple constraints + explicit play)
+  const startCamera = useCallback(async () => {
+    try {
+      const existing = videoRef.current?.srcObject as MediaStream | null;
+      existing?.getTracks().forEach((tr) => tr.stop());
 
-    navigator.mediaDevices
-      .getUserMedia({
-        video: {
-          facingMode: "user",
-          width: { ideal: 640 },
-          height: { ideal: 480 },
-        },
-        audio: false,
-      })
-      .then((s) => {
-        if (cancelled) {
-          s.getTracks().forEach((tr) => tr.stop());
-          return;
-        }
-        stream = s;
-        if (videoRef.current) {
-          videoRef.current.srcObject = s;
-          videoRef.current.play().catch(() => {});
-        }
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setResult({
-          type: "error",
-          title: "Kamera Tidak Tersedia",
-          subtitle: "Izinkan akses kamera pada browser Chrome mode kiosk.",
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 640 }, height: { ideal: 480 } },
+          audio: false,
         });
-      });
+      } catch {
+        // Fallback tanpa constraint resolusi bila driver webcam Linux menolak ideal width/height
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: false,
+        });
+      }
 
-    return () => {
-      cancelled = true;
       if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play().catch(() => {});
+      }
+      return stream;
+    } catch (err) {
+      const msg = err instanceof Error ? `${err.name}: ${err.message}` : "Akses kamera ditolak";
+      setResult({
+        type: "error",
+        title: "Kamera Tidak Tersedia",
+        subtitle: `Izinkan akses kamera pada browser (${msg}).`,
+      });
+      return null;
+    }
+  }, []);
+
+  useEffect(() => {
+    let activeStream: MediaStream | null = null;
+    startCamera().then((s) => {
+      activeStream = s;
+    });
+    return () => {
+      activeStream?.getTracks().forEach((tr) => tr.stop());
+      if (videoRef.current) {
+        const cur = videoRef.current.srcObject as MediaStream | null;
+        cur?.getTracks().forEach((tr) => tr.stop());
         videoRef.current.srcObject = null;
       }
-      stream?.getTracks().forEach((tr) => tr.stop());
     };
-  }, []);
+  }, [startCamera]);
 
   const refreshQueueCount = useCallback(async () => {
     const items = await getAllQueuedAttendance().catch(() => []);
