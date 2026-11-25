@@ -181,7 +181,14 @@ export const FaceEnrollPage: React.FC = () => {
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div className="bg-slate-900 rounded-2xl overflow-hidden relative aspect-[4/3]">
-          <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover scale-x-[-1]" />
+          <video
+            ref={videoRef}
+            autoPlay
+            playsInline
+            muted
+            onLoadedMetadata={(e) => e.currentTarget.play().catch(() => {})}
+            className="w-full h-full object-cover"
+          />
           <canvas ref={canvasRef} className="hidden" />
           <div className="absolute bottom-3 left-3 right-3 bg-slate-950/80 text-white px-3.5 py-2 rounded-xl text-xs">
             Panduan: <strong>{POSES[poseIdx]?.label}</strong>

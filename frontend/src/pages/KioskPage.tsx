@@ -490,7 +490,8 @@ export const KioskPage: React.FC = () => {
             autoPlay
             playsInline
             muted
-            className="w-full h-full object-cover scale-x-[-1]"
+            onLoadedMetadata={(e) => e.currentTarget.play().catch(() => {})}
+            className="w-full h-full object-cover"
           />
           <canvas ref={canvasRef} className="hidden" />
 
