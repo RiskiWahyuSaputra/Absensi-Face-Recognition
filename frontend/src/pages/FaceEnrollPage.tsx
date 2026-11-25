@@ -30,15 +30,40 @@ export const FaceEnrollPage: React.FC = () => {
   const [verifyResult, setVerifyResult] = useState<string>("");
 
   useEffect(() => {
+    let cancelled = false;
     let stream: MediaStream | null = null;
+
     navigator.mediaDevices
-      .getUserMedia({ video: { facingMode: "user", width: 640, height: 480 } })
-      .then((s) => {
-        stream = s;
-        if (videoRef.current) videoRef.current.srcObject = s;
+      .getUserMedia({
+        video: {
+          facingMode: "user",
+          width: { ideal: 640 },
+          height: { ideal: 480 },
+        },
+        audio: false,
       })
-      .catch(() => setFeedback("Gagal mengakses kamera. Pastikan izin kamera aktif."));
+      .then((s) => {
+        if (cancelled) {
+          s.getTracks().forEach((t) => t.stop());
+          return;
+        }
+        stream = s;
+        if (videoRef.current) {
+          videoRef.current.srcObject = s;
+          videoRef.current.play().catch(() => {});
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setFeedback("Gagal mengakses kamera. Pastikan izin kamera aktif dan tidak dipakai tab lain.");
+        }
+      });
+
     return () => {
+      cancelled = true;
+      if (videoRef.current) {
+        videoRef.current.srcObject = null;
+      }
       stream?.getTracks().forEach((t) => t.stop());
     };
   }, []);

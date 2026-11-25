@@ -67,18 +67,33 @@ export const KioskPage: React.FC = () => {
     };
   }, []);
 
-  // Start webcam
+  // Start webcam (React 18 StrictMode safe + explicit play)
   useEffect(() => {
+    let cancelled = false;
     let stream: MediaStream | null = null;
+
     navigator.mediaDevices
-      .getUserMedia({ video: { facingMode: "user", width: 640, height: 480 } })
+      .getUserMedia({
+        video: {
+          facingMode: "user",
+          width: { ideal: 640 },
+          height: { ideal: 480 },
+        },
+        audio: false,
+      })
       .then((s) => {
+        if (cancelled) {
+          s.getTracks().forEach((tr) => tr.stop());
+          return;
+        }
         stream = s;
         if (videoRef.current) {
           videoRef.current.srcObject = s;
+          videoRef.current.play().catch(() => {});
         }
       })
       .catch(() => {
+        if (cancelled) return;
         setResult({
           type: "error",
           title: "Kamera Tidak Tersedia",
@@ -87,6 +102,10 @@ export const KioskPage: React.FC = () => {
       });
 
     return () => {
+      cancelled = true;
+      if (videoRef.current) {
+        videoRef.current.srcObject = null;
+      }
       stream?.getTracks().forEach((tr) => tr.stop());
     };
   }, []);
