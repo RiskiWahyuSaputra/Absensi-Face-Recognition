@@ -1,8 +1,10 @@
 import React, { useEffect, useState } from "react";
-import { Check, X, Plus } from "lucide-react";
+import { Check, Plus, X } from "lucide-react";
 import { apiFetch } from "../lib/api";
 import { StatusBadge } from "../components/StatusBadge";
+import { Alert, Modal, Notice, PageHeader, TableMessage } from "../components/ui";
 import { useAuth } from "../context/AuthContext";
+import { errMsg, fmtDateTime, fmtShortDate, fmtTime } from "../lib/format";
 
 interface CorrectionRow {
   id: string;
@@ -19,21 +21,35 @@ interface CorrectionRow {
   review_note: string | null;
 }
 
+type Decision = "approved" | "rejected";
+
 export const CorrectionsPage: React.FC = () => {
   const { user } = useAuth();
   const canApprove =
     user?.role === "supervisor" || user?.role === "hr_admin" || user?.role === "it_admin";
 
-  const [list, setList] = useState<CorrectionRow[]>([]);
+  const [list, setList] = useState<CorrectionRow[] | null>(null);
+  const [notice, setNotice] = useState<Notice>(null);
+
   const [showForm, setShowForm] = useState(false);
   const [attendanceDate, setAttendanceDate] = useState(new Date().toISOString().slice(0, 10));
   const [attendanceType, setAttendanceType] = useState<"check_in" | "check_out">("check_in");
   const [timeStr, setTimeStr] = useState("08:00");
   const [reason, setReason] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [formError, setFormError] = useState("");
+
+  const [review, setReview] = useState<{ row: CorrectionRow; decision: Decision } | null>(null);
+  const [reviewNote, setReviewNote] = useState("");
 
   async function load() {
-    const res = await apiFetch<{ corrections: CorrectionRow[] }>("/corrections");
-    setList(res.corrections);
+    try {
+      const res = await apiFetch<{ corrections: CorrectionRow[] }>("/corrections");
+      setList(res.corrections);
+    } catch (e) {
+      setList([]);
+      setNotice({ tone: "error", text: errMsg(e, "Gagal memuat koreksi") });
+    }
   }
 
   useEffect(() => {
@@ -42,192 +58,284 @@ export const CorrectionsPage: React.FC = () => {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    const requestedTime = new Date(`${attendanceDate}T${timeStr}:00`).toISOString();
-    await apiFetch("/corrections", {
-      method: "POST",
-      body: JSON.stringify({ attendanceDate, attendanceType, requestedTime, reason }),
-    });
-    setShowForm(false);
-    setReason("");
-    load();
+    setSubmitting(true);
+    setFormError("");
+    try {
+      const requestedTime = new Date(`${attendanceDate}T${timeStr}:00`).toISOString();
+      await apiFetch("/corrections", {
+        method: "POST",
+        body: JSON.stringify({ attendanceDate, attendanceType, requestedTime, reason }),
+      });
+      setShowForm(false);
+      setReason("");
+      setNotice({ tone: "success", text: "Pengajuan koreksi terkirim dan menunggu persetujuan atasan." });
+      load();
+    } catch (err) {
+      setFormError(errMsg(err, "Gagal mengirim pengajuan"));
+    } finally {
+      setSubmitting(false);
+    }
   }
 
-  async function handleReview(id: string, decision: "approved" | "rejected") {
-    const reviewNote = window.prompt(
-      decision === "approved" ? "Catatan persetujuan (opsional):" : "Alasan penolakan:"
-    );
-    await apiFetch(`/corrections/${id}/review`, {
-      method: "POST",
-      body: JSON.stringify({ decision, reviewNote: reviewNote || undefined }),
-    });
-    load();
+  async function submitReview(e: React.FormEvent) {
+    e.preventDefault();
+    if (!review) return;
+    setSubmitting(true);
+    try {
+      await apiFetch(`/corrections/${review.row.id}/review`, {
+        method: "POST",
+        body: JSON.stringify({ decision: review.decision, reviewNote: reviewNote.trim() || undefined }),
+      });
+      setNotice({
+        tone: "success",
+        text: `Koreksi ${review.row.full_name} ${review.decision === "approved" ? "disetujui" : "ditolak"}.`,
+      });
+      setReview(null);
+      load();
+    } catch (err) {
+      setNotice({ tone: "error", text: errMsg(err, "Gagal menyimpan keputusan") });
+    } finally {
+      setSubmitting(false);
+    }
   }
+
+  function openReview(row: CorrectionRow, decision: Decision) {
+    setReviewNote("");
+    setReview({ row, decision });
+  }
+
+  const pendingCount = list?.filter((c) => c.status === "pending").length ?? 0;
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-900">Koreksi Absensi &amp; Persetujuan</h1>
-          <p className="text-sm text-slate-500">
-            Semua pengajuan dan persetujuan koreksi tercatat lengkap (siapa, kapan, alasan).
-          </p>
-        </div>
-        <button
-          onClick={() => setShowForm(true)}
-          className="px-4 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium flex items-center gap-2 cursor-pointer"
-        >
-          <Plus className="w-4 h-4" /> Ajukan Koreksi
-        </button>
-      </div>
+      <PageHeader
+        title="Koreksi Absen"
+        description="Ajukan perbaikan jam absen yang terlewat. Setiap pengajuan dan keputusan tercatat lengkap: siapa, kapan, dan alasannya."
+        actions={
+          <button
+            onClick={() => {
+              setFormError("");
+              setShowForm(true);
+            }}
+            className="btn btn-primary"
+          >
+            <Plus className="h-4 w-4" /> Ajukan koreksi
+          </button>
+        }
+      />
 
-      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+      {notice && (
+        <Alert tone={notice.tone} onClose={() => setNotice(null)}>
+          {notice.text}
+        </Alert>
+      )}
+
+      <section className="card overflow-hidden">
+        <div className="card-header">
+          <h2 className="card-title">Daftar pengajuan</h2>
+          {canApprove && pendingCount > 0 && (
+            <span className="text-xs font-semibold text-amber-700">{pendingCount} menunggu keputusan</span>
+          )}
+        </div>
         <div className="overflow-x-auto">
-          <table className="w-full text-sm text-left">
-            <thead className="bg-slate-50 text-slate-600 text-xs uppercase">
+          <table className="data-table">
+            <thead>
               <tr>
-                <th className="px-5 py-3">Karyawan</th>
-                <th className="px-5 py-3">Tanggal &amp; Jam</th>
-                <th className="px-5 py-3">Alasan</th>
-                <th className="px-5 py-3">Status</th>
-                <th className="px-5 py-3">Audit Persetujuan</th>
-                {canApprove && <th className="px-5 py-3 text-right">Aksi</th>}
+                <th>Karyawan</th>
+                <th>Diajukan untuk</th>
+                <th>Alasan</th>
+                <th>Status</th>
+                <th>Peninjau</th>
+                {canApprove && <th className="text-right">Keputusan</th>}
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100">
-              {list.map((c) => (
-                <tr key={c.id}>
-                  <td className="px-5 py-3">
-                    <div className="font-medium">{c.full_name}</div>
+            <tbody>
+              {list === null && <TableMessage colSpan={6}>Memuat pengajuan...</TableMessage>}
+              {list?.length === 0 && (
+                <TableMessage colSpan={6}>
+                  Belum ada pengajuan. Klik "Ajukan koreksi" bila ada absen yang terlewat.
+                </TableMessage>
+              )}
+              {list?.map((c) => (
+                <tr key={c.id} className="hover:bg-slate-50/70">
+                  <td className="cell-primary">
+                    <div className="font-semibold text-slate-900">{c.full_name}</div>
                     <div className="text-xs text-slate-500">{c.nik}</div>
                   </td>
-                  <td className="px-5 py-3 text-xs">
-                    <div className="font-medium">
-                      {c.attendance_date.slice(0, 10)} ·{" "}
-                      {c.attendance_type === "check_in" ? "Masuk" : "Pulang"}
+                  <td data-label="Untuk" className="whitespace-nowrap">
+                    <div className="font-medium text-slate-900">
+                      {c.attendance_type === "check_in" ? "Masuk" : "Pulang"} {fmtTime(c.requested_time)}
                     </div>
-                    <div className="font-mono text-slate-500">
-                      {new Date(c.requested_time).toLocaleTimeString("id-ID", {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
-                    </div>
+                    <div className="text-xs text-slate-500">{fmtShortDate(c.attendance_date)}</div>
                   </td>
-                  <td className="px-5 py-3 text-slate-700 max-w-xs">{c.reason}</td>
-                  <td className="px-5 py-3">
+                  <td data-label="Alasan" className="text-slate-700 md:max-w-xs">
+                    {c.reason}
+                  </td>
+                  <td data-label="Status">
                     <StatusBadge value={c.status} />
                   </td>
-                  <td className="px-5 py-3 text-xs text-slate-500">
+                  <td data-label="Peninjau" className="text-xs text-slate-600">
                     {c.reviewed_by_name ? (
                       <>
-                        <div>Oleh: {c.reviewed_by_name}</div>
-                        <div>{c.review_note || "-"}</div>
+                        <div className="font-medium text-slate-800">{c.reviewed_by_name}</div>
+                        {c.reviewed_at && <div>{fmtDateTime(c.reviewed_at)}</div>}
+                        {c.review_note && <div className="mt-0.5 italic">"{c.review_note}"</div>}
                       </>
                     ) : (
-                      "Menunggu peninjauan"
+                      "Belum ditinjau"
                     )}
                   </td>
                   {canApprove && (
-                    <td className="px-5 py-3 text-right space-x-1.5 whitespace-nowrap">
+                    <td className="cell-actions md:text-right">
                       {c.status === "pending" && (
-                        <>
-                          <button
-                            onClick={() => handleReview(c.id, "approved")}
-                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-emerald-600 text-white text-xs cursor-pointer"
-                          >
-                            <Check className="w-3.5 h-3.5" /> Setujui
+                        <div className="flex gap-2 md:justify-end">
+                          <button onClick={() => openReview(c, "approved")} className="btn btn-primary btn-sm">
+                            <Check className="h-3.5 w-3.5" /> Setujui
                           </button>
-                          <button
-                            onClick={() => handleReview(c.id, "rejected")}
-                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-rose-100 text-rose-700 text-xs cursor-pointer"
-                          >
-                            <X className="w-3.5 h-3.5" /> Tolak
+                          <button onClick={() => openReview(c, "rejected")} className="btn btn-danger-soft btn-sm">
+                            <X className="h-3.5 w-3.5" /> Tolak
                           </button>
-                        </>
+                        </div>
                       )}
                     </td>
                   )}
                 </tr>
               ))}
-              {list.length === 0 && (
-                <tr>
-                  <td colSpan={6} className="px-5 py-8 text-center text-slate-400">
-                    Belum ada pengajuan koreksi absensi.
-                  </td>
-                </tr>
-              )}
             </tbody>
           </table>
         </div>
-      </div>
+      </section>
 
       {showForm && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6">
-            <h2 className="text-lg font-bold mb-4">Ajukan Koreksi Absensi</h2>
-            <form onSubmit={handleSubmit} className="space-y-4">
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1">Tanggal</label>
-                  <input
-                    type="date"
-                    required
-                    value={attendanceDate}
-                    onChange={(e) => setAttendanceDate(e.target.value)}
-                    className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1">Jam</label>
-                  <input
-                    type="time"
-                    required
-                    value={timeStr}
-                    onChange={(e) => setTimeStr(e.target.value)}
-                    className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
-                  />
-                </div>
+        <Modal
+          title="Ajukan koreksi absen"
+          description="Atasan akan meninjau pengajuan ini."
+          onClose={() => setShowForm(false)}
+        >
+          <form onSubmit={handleSubmit} className="space-y-4">
+            {formError && <Alert tone="error">{formError}</Alert>}
+            <fieldset>
+              <legend className="field-label">Jenis absen</legend>
+              <div className="grid grid-cols-2 gap-2">
+                {(
+                  [
+                    ["check_in", "Masuk"],
+                    ["check_out", "Pulang"],
+                  ] as const
+                ).map(([v, label]) => (
+                  <label
+                    key={v}
+                    className={`flex cursor-pointer items-center justify-center rounded-lg border px-3 py-2.5 text-sm font-semibold transition-colors has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-brand-600 ${
+                      attendanceType === v
+                        ? "border-brand-600 bg-brand-50 text-brand-800"
+                        : "border-slate-300 text-slate-600 hover:bg-slate-50"
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="attendanceType"
+                      value={v}
+                      checked={attendanceType === v}
+                      onChange={() => setAttendanceType(v)}
+                      className="sr-only"
+                    />
+                    {label}
+                  </label>
+                ))}
               </div>
+            </fieldset>
+            <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">Jenis Absen</label>
-                <select
-                  value={attendanceType}
-                  onChange={(e) => setAttendanceType(e.target.value as "check_in" | "check_out")}
-                  className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
-                >
-                  <option value="check_in">Absen Masuk</option>
-                  <option value="check_out">Absen Pulang</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">Alasan Koreksi</label>
-                <textarea
+                <label htmlFor="corr-date" className="field-label">
+                  Tanggal
+                </label>
+                <input
+                  id="corr-date"
+                  type="date"
                   required
-                  minLength={5}
-                  rows={3}
-                  value={reason}
-                  onChange={(e) => setReason(e.target.value)}
-                  placeholder="Contoh: Lupa absen pulang karena lembur rapat klien"
-                  className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
+                  value={attendanceDate}
+                  onChange={(e) => setAttendanceDate(e.target.value)}
+                  className="input"
                 />
               </div>
-              <div className="flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => setShowForm(false)}
-                  className="px-4 py-2 rounded-lg bg-slate-100 text-sm cursor-pointer"
-                >
-                  Batal
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium cursor-pointer"
-                >
-                  Kirim Pengajuan
-                </button>
+              <div>
+                <label htmlFor="corr-time" className="field-label">
+                  Jam sebenarnya
+                </label>
+                <input
+                  id="corr-time"
+                  type="time"
+                  required
+                  value={timeStr}
+                  onChange={(e) => setTimeStr(e.target.value)}
+                  className="input"
+                />
               </div>
-            </form>
-          </div>
-        </div>
+            </div>
+            <div>
+              <label htmlFor="corr-reason" className="field-label">
+                Alasan
+              </label>
+              <textarea
+                id="corr-reason"
+                required
+                minLength={5}
+                rows={3}
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                placeholder="Jelaskan kenapa absen terlewat"
+                className="input"
+              />
+            </div>
+            <div className="flex flex-col-reverse gap-2 pt-2 sm:flex-row sm:justify-end">
+              <button type="button" onClick={() => setShowForm(false)} className="btn btn-secondary">
+                Batal
+              </button>
+              <button type="submit" disabled={submitting} className="btn btn-primary">
+                {submitting ? "Mengirim..." : "Kirim pengajuan"}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {review && (
+        <Modal
+          title={review.decision === "approved" ? "Setujui koreksi" : "Tolak koreksi"}
+          description={`${review.row.full_name} · ${
+            review.row.attendance_type === "check_in" ? "Masuk" : "Pulang"
+          } ${fmtTime(review.row.requested_time)}, ${fmtShortDate(review.row.attendance_date)}`}
+          onClose={() => setReview(null)}
+        >
+          <form onSubmit={submitReview} className="space-y-4">
+            <div className="rounded-lg bg-slate-50 p-3 text-sm text-slate-700">"{review.row.reason}"</div>
+            <div>
+              <label htmlFor="review-note" className="field-label">
+                {review.decision === "approved" ? "Catatan (opsional)" : "Alasan penolakan"}
+              </label>
+              <textarea
+                id="review-note"
+                rows={3}
+                required={review.decision === "rejected"}
+                value={reviewNote}
+                onChange={(e) => setReviewNote(e.target.value)}
+                className="input"
+              />
+            </div>
+            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <button type="button" onClick={() => setReview(null)} className="btn btn-secondary">
+                Batal
+              </button>
+              <button
+                type="submit"
+                disabled={submitting}
+                className={`btn ${review.decision === "approved" ? "btn-primary" : "btn-danger"}`}
+              >
+                {submitting ? "Menyimpan..." : review.decision === "approved" ? "Setujui" : "Tolak"}
+              </button>
+            </div>
+          </form>
+        </Modal>
       )}
     </div>
   );

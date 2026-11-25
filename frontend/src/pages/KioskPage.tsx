@@ -7,16 +7,23 @@ import {
   KeyRound,
   CheckCircle2,
   AlertTriangle,
+  XCircle,
+  CloudOff,
   ScanFace,
   RefreshCw,
   ArrowLeft,
+  Pause,
+  Play,
+  CameraOff,
 } from "lucide-react";
+import { Modal } from "../components/ui";
 import { getKioskToken, kioskFetch, setKioskToken } from "../lib/api";
 import {
   enqueueOfflineAttendance,
   getAllQueuedAttendance,
   removeQueuedAttendance,
 } from "../lib/offlineQueue";
+import { captureVideoFrame, useWebcam } from "../lib/useWebcam";
 
 interface KioskResult {
   type: "success" | "warning" | "error" | "offline";
@@ -67,56 +74,8 @@ export const KioskPage: React.FC = () => {
     };
   }, []);
 
-  // Start webcam (single acquire + fallback simple constraints + explicit play)
-  const startCamera = useCallback(async () => {
-    try {
-      const existing = videoRef.current?.srcObject as MediaStream | null;
-      existing?.getTracks().forEach((tr) => tr.stop());
-
-      let stream: MediaStream;
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: { ideal: 640 }, height: { ideal: 480 } },
-          audio: false,
-        });
-      } catch {
-        // Fallback tanpa constraint resolusi bila driver webcam Linux menolak ideal width/height
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: true,
-          audio: false,
-        });
-      }
-
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play().catch(() => {});
-      }
-      return stream;
-    } catch (err) {
-      const msg = err instanceof Error ? `${err.name}: ${err.message}` : "Akses kamera ditolak";
-      setResult({
-        type: "error",
-        title: "Kamera Tidak Tersedia",
-        subtitle: `Izinkan akses kamera pada browser (${msg}).`,
-      });
-      return null;
-    }
-  }, []);
-
-  useEffect(() => {
-    let activeStream: MediaStream | null = null;
-    startCamera().then((s) => {
-      activeStream = s;
-    });
-    return () => {
-      activeStream?.getTracks().forEach((tr) => tr.stop());
-      if (videoRef.current) {
-        const cur = videoRef.current.srcObject as MediaStream | null;
-        cur?.getTracks().forEach((tr) => tr.stop());
-        videoRef.current.srcObject = null;
-      }
-    };
-  }, [startCamera]);
+  // Webcam dengan auto-reconnect bila perangkat putus-sambung
+  const { error: cameraError, retry: retryCamera } = useWebcam(videoRef);
 
   const refreshQueueCount = useCallback(async () => {
     const items = await getAllQueuedAttendance().catch(() => []);
@@ -189,17 +148,10 @@ export const KioskPage: React.FC = () => {
     }
   }, [isOnline, syncOfflineQueue]);
 
-  const captureFrame = useCallback((): string | null => {
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    if (!video || !canvas || video.readyState < 2) return null;
-    canvas.width = video.videoWidth || 640;
-    canvas.height = video.videoHeight || 480;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return null;
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    return canvas.toDataURL("image/jpeg", 0.82);
-  }, []);
+  const captureFrame = useCallback(
+    (): string | null => captureVideoFrame(videoRef.current, canvasRef.current, 0.82),
+    []
+  );
 
   const showTemporaryResult = useCallback((res: KioskResult, ms = 3500) => {
     setResult(res);
@@ -416,243 +368,282 @@ export const KioskPage: React.FC = () => {
     }
   }
 
+  const resultStyle =
+    result?.type === "success"
+      ? { box: "bg-brand-700 text-white", icon: <CheckCircle2 className="h-9 w-9 shrink-0 sm:h-11 sm:w-11" /> }
+      : result?.type === "error"
+      ? { box: "bg-rose-600 text-white", icon: <XCircle className="h-9 w-9 shrink-0 sm:h-11 sm:w-11" /> }
+      : result?.type === "offline"
+      ? { box: "bg-indigo-600 text-white", icon: <CloudOff className="h-9 w-9 shrink-0 sm:h-11 sm:w-11" /> }
+      : { box: "bg-amber-400 text-amber-950", icon: <AlertTriangle className="h-9 w-9 shrink-0 sm:h-11 sm:w-11" /> };
+
+  const statusText = cameraError
+    ? "Kamera belum siap"
+    : scanning
+    ? "Memverifikasi wajah..."
+    : autoScanEnabled
+    ? "Posisikan wajah di dalam bingkai"
+    : "Pemindaian otomatis dijeda";
+
   return (
-    <div className="min-h-screen bg-slate-950 text-white flex flex-col">
-      {/* Header Kiosk */}
-      <header className="px-6 py-4 bg-slate-900/90 border-b border-slate-800 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center">
-            <ScanFace className="w-6 h-6" />
+    <div className="flex min-h-dvh flex-col bg-slate-950 text-white">
+      {/* Header */}
+      <header className="flex items-center justify-between gap-3 border-b border-slate-800 px-4 py-3 sm:px-6">
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-brand-600">
+            <ScanFace className="h-5 w-5" />
           </div>
-          <div>
-            <div className="font-semibold text-base">{kioskName}</div>
-            <div className="text-xs text-slate-400">
-              Berdiri di depan kamera — deteksi wajah &amp; liveness otomatis
-            </div>
+          <div className="min-w-0">
+            <div className="truncate text-sm font-bold sm:text-base">{kioskName}</div>
+            <div className="hidden text-xs text-slate-400 sm:block">Absen otomatis dengan wajah</div>
           </div>
         </div>
 
-        <div className="flex items-center gap-4">
-          <div className="text-right">
-            <div className="text-2xl font-mono font-bold tracking-wider">
-              {clock.toLocaleTimeString("id-ID", {
-                hour: "2-digit",
-                minute: "2-digit",
-                second: "2-digit",
-              })}
-            </div>
-            <div className="text-xs text-slate-400">
-              {clock.toLocaleDateString("id-ID", {
-                weekday: "long",
-                day: "numeric",
-                month: "long",
-                year: "numeric",
-              })}
-            </div>
-          </div>
-
+        <div className="flex shrink-0 items-center gap-2">
           <div
-            className={`px-3 py-1.5 rounded-full text-xs font-medium flex items-center gap-1.5 ${
-              isOnline
-                ? "bg-emerald-500/20 text-emerald-300"
-                : "bg-amber-500/20 text-amber-300"
+            className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold ${
+              isOnline ? "bg-brand-500/15 text-brand-300" : "bg-amber-500/15 text-amber-300"
             }`}
           >
-            {isOnline ? <Wifi className="w-3.5 h-3.5" /> : <WifiOff className="w-3.5 h-3.5" />}
-            {isOnline ? "Online" : "Offline Mode"}
+            {isOnline ? <Wifi className="h-3.5 w-3.5" /> : <WifiOff className="h-3.5 w-3.5" />}
+            <span className="hidden sm:inline">{isOnline ? "Online" : "Offline"}</span>
           </div>
-
           {queueCount > 0 && (
             <button
               onClick={syncOfflineQueue}
-              className="px-3 py-1.5 rounded-full text-xs font-medium bg-indigo-500/20 text-indigo-300 flex items-center gap-1.5 cursor-pointer"
+              title="Kirim antrean offline sekarang"
+              className="flex items-center gap-1.5 rounded-lg bg-indigo-500/15 px-2.5 py-1.5 text-xs font-semibold text-indigo-300 hover:bg-indigo-500/25"
             >
-              <RefreshCw className="w-3.5 h-3.5" />
-              Antrean: {queueCount}
+              <RefreshCw className="h-3.5 w-3.5" />
+              {queueCount}
+              <span className="hidden sm:inline">antrean</span>
             </button>
           )}
-
           <button
             onClick={() => setShowConfig(true)}
-            className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 cursor-pointer"
-            title="Pengaturan Token Kiosk"
+            aria-label="Pengaturan token kiosk"
+            className="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-white"
           >
-            <Settings className="w-4 h-4" />
+            <Settings className="h-5 w-5" />
           </button>
         </div>
       </header>
 
-      {/* Main Camera Viewport */}
-      <main className="flex-1 flex flex-col items-center justify-center p-6 relative">
-        <div className="relative w-full max-w-2xl aspect-[4/3] rounded-3xl overflow-hidden bg-slate-900 border-2 border-slate-800 shadow-2xl">
+      <main className="mx-auto grid w-full max-w-6xl flex-1 content-center gap-5 p-4 sm:p-6 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)] lg:gap-8">
+        {/* Jam: di atas kamera pada layar sempit */}
+        <div className="text-center lg:hidden">
+          <div className="text-4xl font-bold tracking-tight sm:text-5xl">
+            {clock.toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+          </div>
+          <div className="mt-1 text-sm text-slate-400">
+            {clock.toLocaleDateString("id-ID", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}
+          </div>
+        </div>
+
+        {/* Kamera */}
+        <div className="relative mx-auto aspect-[4/3] w-full max-w-3xl overflow-hidden rounded-2xl border border-slate-800 bg-slate-900">
           <video
             ref={videoRef}
             autoPlay
             playsInline
             muted
             onLoadedMetadata={(e) => e.currentTarget.play().catch(() => {})}
-            className="w-full h-full object-cover"
+            className="h-full w-full object-cover"
           />
           <canvas ref={canvasRef} className="hidden" />
 
-          {/* Face Oval Guide */}
-          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+          {/* Bingkai oval: berubah hijau saat verifikasi berjalan */}
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
             <div
-              className={`w-64 h-80 rounded-[50%] border-4 transition-colors duration-300 ${
-                scanning
-                  ? "border-emerald-400 shadow-[0_0_40px_rgba(52,211,153,0.4)]"
-                  : "border-white/50"
+              className={`aspect-[4/5] h-[70%] rounded-[50%] border-4 transition-colors duration-300 ${
+                scanning ? "border-brand-400" : "border-white/50"
               }`}
             />
           </div>
 
-          {/* Scanning status pill */}
-          <div className="absolute top-4 left-1/2 -translate-x-1/2 px-4 py-1.5 rounded-full bg-slate-950/75 backdrop-blur text-xs font-medium text-slate-200">
-            {scanning
-              ? "Memverifikasi keaslian wajah (Liveness + SFace)..."
-              : autoScanEnabled
-              ? "Posisikan wajah di dalam bingkai oval"
-              : "Pemindaian otomatis dijeda"}
+          <div className="absolute inset-x-0 top-3 flex justify-center px-3">
+            <div className="rounded-lg bg-slate-950/80 px-3 py-1.5 text-xs font-semibold text-slate-100 sm:text-sm">
+              {statusText}
+            </div>
           </div>
 
-          {/* Result Banner Overlay */}
+          {cameraError && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-slate-950/90 p-6 text-center">
+              <CameraOff className="h-10 w-10 text-slate-500" />
+              <div>
+                <div className="font-semibold">Kamera tidak tersedia</div>
+                <p className="mt-1 max-w-sm text-sm text-slate-400">{cameraError}</p>
+              </div>
+              <button onClick={retryCamera} className="btn bg-white text-slate-900 hover:bg-slate-200">
+                <RefreshCw className="h-4 w-4" /> Nyalakan ulang kamera
+              </button>
+            </div>
+          )}
+
           {result && (
             <div
-              className={`absolute bottom-5 left-5 right-5 p-5 rounded-2xl backdrop-blur-md border shadow-xl flex items-center gap-4 ${
-                result.type === "success"
-                  ? "bg-emerald-950/90 border-emerald-500 text-emerald-50"
-                  : result.type === "error"
-                  ? "bg-rose-950/90 border-rose-500 text-rose-50"
-                  : "bg-amber-950/90 border-amber-500 text-amber-50"
-              }`}
+              role="status"
+              aria-live="polite"
+              className={`absolute inset-x-3 bottom-3 flex items-center gap-3 rounded-xl p-4 sm:inset-x-4 sm:bottom-4 sm:gap-4 sm:p-5 ${resultStyle.box}`}
             >
-              {result.type === "success" ? (
-                <CheckCircle2 className="w-10 h-10 text-emerald-400 shrink-0" />
-              ) : (
-                <AlertTriangle className="w-10 h-10 text-amber-400 shrink-0" />
-              )}
-              <div>
-                <div className="text-xl font-bold">{result.title}</div>
-                <div className="text-sm opacity-90">{result.subtitle}</div>
-                {result.meta && <div className="text-xs opacity-75 mt-0.5">{result.meta}</div>}
+              {resultStyle.icon}
+              <div className="min-w-0">
+                <div className="truncate text-lg font-bold sm:text-2xl">{result.title}</div>
+                <div className="text-sm opacity-90 sm:text-base">{result.subtitle}</div>
+                {result.meta && <div className="mt-0.5 text-xs opacity-80">{result.meta}</div>}
               </div>
             </div>
           )}
         </div>
 
-        {/* Bottom Controls */}
-        <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
-          <button
-            onClick={() => setAutoScanEnabled((v) => !v)}
-            className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-sm font-medium cursor-pointer"
-          >
-            {autoScanEnabled ? "Jeda Scan Otomatis" : "Aktifkan Scan Otomatis"}
-          </button>
-          <button
-            onClick={() => setShowPinModal(true)}
-            className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-sm font-medium flex items-center gap-2 cursor-pointer"
-          >
-            <KeyRound className="w-4 h-4" />
-            Absen Pakai PIN (Alternatif / Fallback)
-          </button>
+        {/* Panel samping */}
+        <div className="flex flex-col justify-center gap-6">
+          <div className="hidden lg:block">
+            <div className="text-6xl font-bold tracking-tight">
+              {clock.toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" })}
+              <span className="text-3xl text-slate-500">
+                :{String(clock.getSeconds()).padStart(2, "0")}
+              </span>
+            </div>
+            <div className="mt-2 text-base text-slate-400">
+              {clock.toLocaleDateString("id-ID", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}
+            </div>
+          </div>
+
+          <ol className="hidden space-y-3 text-sm text-slate-300 lg:block">
+            <li className="flex gap-3">
+              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-800 text-xs font-bold">1</span>
+              Berdiri sekitar setengah meter dari tablet.
+            </li>
+            <li className="flex gap-3">
+              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-800 text-xs font-bold">2</span>
+              Pastikan seluruh wajah masuk ke bingkai oval.
+            </li>
+            <li className="flex gap-3">
+              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-800 text-xs font-bold">3</span>
+              Tunggu sebentar. Absen tercatat otomatis tanpa menekan tombol.
+            </li>
+          </ol>
+
+          <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-1">
+            <button
+              onClick={() => setShowPinModal(true)}
+              className="btn bg-white py-3.5 text-base text-slate-900 hover:bg-slate-200"
+            >
+              <KeyRound className="h-5 w-5" />
+              Absen pakai PIN
+            </button>
+            <button
+              onClick={() => setAutoScanEnabled((v) => !v)}
+              className="btn bg-slate-800 py-3.5 text-slate-200 hover:bg-slate-700"
+            >
+              {autoScanEnabled ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+              {autoScanEnabled ? "Jeda pemindaian" : "Lanjutkan pemindaian"}
+            </button>
+          </div>
+
           <Link
             to="/"
-            className="px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-700 hover:bg-slate-800 text-sm text-slate-300 flex items-center gap-2"
+            className="inline-flex items-center justify-center gap-1.5 text-sm text-slate-500 hover:text-slate-300 lg:justify-start"
           >
-            <ArrowLeft className="w-4 h-4" />
-            Dashboard HR
+            <ArrowLeft className="h-4 w-4" />
+            Kembali ke dashboard HR
           </Link>
         </div>
       </main>
 
-      {/* Modal Fallback PIN + Foto */}
       {showPinModal && (
-        <div className="fixed inset-0 bg-black/75 flex items-center justify-center p-4 z-50">
-          <div className="w-full max-w-md bg-slate-900 border border-slate-700 rounded-2xl p-6">
-            <h2 className="text-lg font-bold mb-1">Absen dengan PIN + Foto Bukti</h2>
-            <p className="text-xs text-slate-400 mb-4">
-              Digunakan bila wajah gagal 3× atau karyawan memilih alternatif PIN (UU PDP). Foto akan
-              diambil otomatis untuk ditinjau HR.
-            </p>
-            <form onSubmit={handlePinSubmit} className="space-y-4">
-              <div>
-                <label className="block text-xs text-slate-300 mb-1">NIK Karyawan</label>
-                <input
-                  type="text"
-                  required
-                  placeholder="Contoh: EMP-001"
-                  value={pinNik}
-                  onChange={(e) => setPinNik(e.target.value)}
-                  className="w-full px-3.5 py-2.5 rounded-lg bg-slate-800 border border-slate-700 text-white text-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-xs text-slate-300 mb-1">PIN 6 Digit</label>
-                <input
-                  type="password"
-                  inputMode="numeric"
-                  required
-                  placeholder="••••••"
-                  value={pinCode}
-                  onChange={(e) => setPinCode(e.target.value)}
-                  className="w-full px-3.5 py-2.5 rounded-lg bg-slate-800 border border-slate-700 text-white text-sm tracking-widest"
-                />
-              </div>
-              <div className="flex gap-3 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setShowPinModal(false)}
-                  className="flex-1 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-sm cursor-pointer"
-                >
-                  Batal
-                </button>
-                <button
-                  type="submit"
-                  disabled={pinSubmitting}
-                  className="flex-1 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-sm font-medium cursor-pointer"
-                >
-                  {pinSubmitting ? "Mengirim..." : "Catat Absen PIN"}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Modal Token Perangkat Kiosk */}
-      {showConfig && (
-        <div className="fixed inset-0 bg-black/75 flex items-center justify-center p-4 z-50">
-          <div className="w-full max-w-md bg-slate-900 border border-slate-700 rounded-2xl p-6">
-            <h2 className="text-lg font-bold mb-1">Konfigurasi Token Kiosk</h2>
-            <p className="text-xs text-slate-400 mb-4">
-              Tiap tablet memiliki token unik dari Admin IT yang dapat dicabut sewaktu-waktu.
-            </p>
-            <input
-              type="text"
-              value={tokenInput}
-              onChange={(e) => setTokenInput(e.target.value)}
-              className="w-full px-3.5 py-2.5 rounded-lg bg-slate-800 border border-slate-700 text-white text-sm font-mono mb-4"
-            />
-            <div className="flex gap-3">
+        <Modal
+          dark
+          title="Absen dengan PIN"
+          description="Foto kamu tetap diambil sebagai bukti dan ditinjau HR."
+          onClose={() => setShowPinModal(false)}
+        >
+          <form onSubmit={handlePinSubmit} className="space-y-4">
+            <div>
+              <label htmlFor="pin-nik" className="mb-1.5 block text-xs font-semibold text-slate-300">
+                NIK karyawan
+              </label>
+              <input
+                id="pin-nik"
+                type="text"
+                required
+                autoComplete="off"
+                placeholder="mis. EMP-001"
+                value={pinNik}
+                onChange={(e) => setPinNik(e.target.value)}
+                className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3.5 py-3 text-base text-white placeholder:text-slate-500 focus:border-brand-500 focus:outline-none"
+              />
+            </div>
+            <div>
+              <label htmlFor="pin-code" className="mb-1.5 block text-xs font-semibold text-slate-300">
+                PIN 6 angka
+              </label>
+              <input
+                id="pin-code"
+                type="password"
+                inputMode="numeric"
+                pattern="\d{6}"
+                maxLength={6}
+                required
+                autoComplete="off"
+                value={pinCode}
+                onChange={(e) => setPinCode(e.target.value)}
+                className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3.5 py-3 text-center font-mono text-2xl tracking-[0.5em] text-white focus:border-brand-500 focus:outline-none"
+              />
+            </div>
+            <div className="flex flex-col-reverse gap-2 pt-2 sm:flex-row">
               <button
-                onClick={() => setShowConfig(false)}
-                className="flex-1 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-sm cursor-pointer"
+                type="button"
+                onClick={() => setShowPinModal(false)}
+                className="btn flex-1 bg-slate-800 py-3 text-slate-200 hover:bg-slate-700"
               >
-                Tutup
+                Batal
               </button>
-              <button
-                onClick={() => {
-                  setKioskToken(tokenInput);
-                  setShowConfig(false);
-                  loadKioskInfo();
-                }}
-                className="flex-1 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-sm font-medium cursor-pointer"
-              >
-                Simpan Token
+              <button type="submit" disabled={pinSubmitting} className="btn btn-primary flex-1 py-3">
+                {pinSubmitting ? "Mengirim..." : "Catat absen"}
               </button>
             </div>
+          </form>
+        </Modal>
+      )}
+
+      {showConfig && (
+        <Modal
+          dark
+          title="Token kiosk"
+          description="Setiap tablet punya token unik dari Admin IT. Token bisa dicabut kapan saja."
+          onClose={() => setShowConfig(false)}
+        >
+          <label htmlFor="kiosk-token" className="sr-only">
+            Token kiosk
+          </label>
+          <input
+            id="kiosk-token"
+            type="text"
+            value={tokenInput}
+            onChange={(e) => setTokenInput(e.target.value)}
+            className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3.5 py-3 font-mono text-sm text-white focus:border-brand-500 focus:outline-none"
+          />
+          <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row">
+            <button
+              onClick={() => setShowConfig(false)}
+              className="btn flex-1 bg-slate-800 text-slate-200 hover:bg-slate-700"
+            >
+              Tutup
+            </button>
+            <button
+              onClick={() => {
+                setKioskToken(tokenInput);
+                setShowConfig(false);
+                loadKioskInfo();
+              }}
+              className="btn btn-primary flex-1"
+            >
+              Simpan token
+            </button>
           </div>
-        </div>
+        </Modal>
       )}
     </div>
   );

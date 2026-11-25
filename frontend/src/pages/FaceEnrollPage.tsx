@@ -1,15 +1,19 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { Camera, CheckCircle2, ArrowLeft, ShieldCheck, RefreshCw } from "lucide-react";
+import { ArrowLeft, Camera, Check, CheckCircle2, RefreshCw, ShieldCheck } from "lucide-react";
 import { apiFetch } from "../lib/api";
+import { captureVideoFrame, useWebcam } from "../lib/useWebcam";
+import { Alert, Notice, PageHeader } from "../components/ui";
+import { errMsg } from "../lib/format";
 
 const POSES = [
-  { key: "front", label: "1. Hadap Lurus ke Kamera" },
-  { key: "left", label: "2. Sedikit Menoleh Kiri" },
-  { key: "right", label: "3. Sedikit Menoleh Kanan" },
-  { key: "glasses_alt", label: "4. Tanpa / Dengan Kacamata (Opsional)" },
-  { key: "neutral", label: "5. Ekspresi Netral / Senyum (Opsional)" },
+  { key: "front", label: "Hadap lurus ke kamera", optional: false },
+  { key: "left", label: "Sedikit menoleh ke kiri", optional: false },
+  { key: "right", label: "Sedikit menoleh ke kanan", optional: false },
+  { key: "glasses_alt", label: "Dengan / tanpa kacamata", optional: true },
+  { key: "neutral", label: "Ekspresi netral atau senyum", optional: true },
 ];
+const MIN_PHOTOS = 3;
 
 interface CapturedPose {
   poseLabel: string;
@@ -23,66 +27,29 @@ export const FaceEnrollPage: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const [captures, setCaptures] = useState<CapturedPose[]>([]);
-  const [poseIdx, setPoseIdx] = useState(0);
   const [checking, setChecking] = useState(false);
-  const [feedback, setFeedback] = useState("");
+  const [notice, setNotice] = useState<Notice>(null);
   const [enrolled, setEnrolled] = useState(false);
-  const [verifyResult, setVerifyResult] = useState<string>("");
+  const [verify, setVerify] = useState<{ matched: boolean; text: string } | null>(null);
+
+  const { error: cameraError, retry: retryCamera } = useWebcam(videoRef);
+  const poseIdx = Math.min(captures.length, POSES.length - 1);
+  const currentPose = POSES[poseIdx];
+  const allTaken = captures.length >= POSES.length;
 
   useEffect(() => {
-    let activeStream: MediaStream | null = null;
-
-    async function initCamera() {
-      try {
-        let s: MediaStream;
-        try {
-          s = await navigator.mediaDevices.getUserMedia({
-            video: { width: { ideal: 640 }, height: { ideal: 480 } },
-            audio: false,
-          });
-        } catch {
-          s = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-        }
-        activeStream = s;
-        if (videoRef.current) {
-          videoRef.current.srcObject = s;
-          await videoRef.current.play().catch(() => {});
-        }
-      } catch (err) {
-        const msg = err instanceof Error ? `${err.name}: ${err.message}` : "";
-        setFeedback(`Gagal mengakses kamera (${msg}). Pastikan izin kamera aktif dan tidak dipakai tab lain.`);
-      }
-    }
-
-    initCamera();
-
-    return () => {
-      activeStream?.getTracks().forEach((t) => t.stop());
-      if (videoRef.current) {
-        const cur = videoRef.current.srcObject as MediaStream | null;
-        cur?.getTracks().forEach((t) => t.stop());
-        videoRef.current.srcObject = null;
-      }
-    };
-  }, []);
+    if (cameraError) setNotice(null);
+  }, [cameraError]);
 
   function takeSnapshot(): string | null {
-    const v = videoRef.current;
-    const c = canvasRef.current;
-    if (!v || !c || v.readyState < 2) return null;
-    c.width = v.videoWidth || 640;
-    c.height = v.videoHeight || 480;
-    const ctx = c.getContext("2d");
-    if (!ctx) return null;
-    ctx.drawImage(v, 0, 0, c.width, c.height);
-    return c.toDataURL("image/jpeg", 0.88);
+    return captureVideoFrame(videoRef.current, canvasRef.current, 0.88);
   }
 
   async function handleCapturePose() {
     const img = takeSnapshot();
     if (!img) return;
     setChecking(true);
-    setFeedback("");
+    setNotice(null);
     try {
       const res = await apiFetch<{
         quality: { passed: boolean; quality_score: number; reasons: string[] };
@@ -92,48 +59,40 @@ export const FaceEnrollPage: React.FC = () => {
       });
 
       if (!res.quality.passed) {
-        setFeedback(`Foto ditolak: ${res.quality.reasons.join(" ")}`);
+        setNotice({ tone: "warning", text: `Foto ditolak: ${res.quality.reasons.join(" ")}` });
         return;
       }
 
-      const currentPose = POSES[poseIdx];
       setCaptures((prev) => [
         ...prev,
-        {
-          poseLabel: currentPose.key,
-          imageBase64: img,
-          qualityScore: res.quality.quality_score,
-        },
+        { poseLabel: currentPose.key, imageBase64: img, qualityScore: res.quality.quality_score },
       ]);
-      setPoseIdx((i) => Math.min(POSES.length - 1, i + 1));
-      setFeedback(
-        `Pose "${currentPose.label}" lolos kualitas (skor ${(res.quality.quality_score * 100).toFixed(0)}%).`
-      );
+      setNotice({
+        tone: "success",
+        text: `"${currentPose.label}" lolos (kualitas ${(res.quality.quality_score * 100).toFixed(0)}%).`,
+      });
     } catch (err) {
-      setFeedback(err instanceof Error ? err.message : "Gagal mengecek kualitas foto");
+      setNotice({ tone: "error", text: errMsg(err, "Gagal mengecek kualitas foto") });
     } finally {
       setChecking(false);
     }
   }
 
   async function handleEnrollSubmit() {
-    if (!employeeId || captures.length < 3) return;
+    if (!employeeId || captures.length < MIN_PHOTOS) return;
     setChecking(true);
-    setFeedback("");
+    setNotice(null);
     try {
       const res = await apiFetch<{ message: string }>(`/face-registration/${employeeId}/enroll`, {
         method: "POST",
         body: JSON.stringify({
-          photos: captures.map((c) => ({
-            poseLabel: c.poseLabel,
-            imageBase64: c.imageBase64,
-          })),
+          photos: captures.map((c) => ({ poseLabel: c.poseLabel, imageBase64: c.imageBase64 })),
         }),
       });
       setEnrolled(true);
-      setFeedback(res.message);
+      setNotice({ tone: "success", text: res.message });
     } catch (err) {
-      setFeedback(err instanceof Error ? err.message : "Gagal menyimpan vektor wajah");
+      setNotice({ tone: "error", text: errMsg(err, "Gagal menyimpan vektor wajah") });
     } finally {
       setChecking(false);
     }
@@ -149,127 +108,163 @@ export const FaceEnrollPage: React.FC = () => {
         `/face-registration/${employeeId}/verify-test`,
         { method: "POST", body: JSON.stringify({ imageBase64: img }) }
       );
-      setVerifyResult(
-        res.matched
-          ? `BERHASIL DIKENALI! Skor kecocokan: ${(res.score * 100).toFixed(1)}% (ambang ${(res.threshold * 100).toFixed(0)}%).`
-          : `Belum cocok (skor ${(res.score * 100).toFixed(1)}%). Silakan ulangi pencahayaan/registrasi.`
-      );
+      setVerify({
+        matched: res.matched,
+        text: res.matched
+          ? `Wajah dikenali. Skor ${(res.score * 100).toFixed(1)}% (ambang ${(res.threshold * 100).toFixed(0)}%).`
+          : `Belum cocok, skor ${(res.score * 100).toFixed(1)}%. Perbaiki pencahayaan atau daftar ulang.`,
+      });
     } catch (err) {
-      setVerifyResult(err instanceof Error ? err.message : "Gagal uji verifikasi");
+      setVerify({ matched: false, text: errMsg(err, "Gagal uji verifikasi") });
     } finally {
       setChecking(false);
     }
   }
 
+  function reset() {
+    setCaptures([]);
+    setNotice(null);
+  }
+
   return (
-    <div className="max-w-4xl space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
+    <div className="space-y-6">
+      <PageHeader
+        back={
           <Link
             to="/employees"
-            className="inline-flex items-center gap-1 text-xs text-slate-500 hover:text-slate-800 mb-1"
+            className="mb-2 inline-flex items-center gap-1 text-sm font-medium text-slate-500 hover:text-slate-900"
           >
-            <ArrowLeft className="w-3.5 h-3.5" /> Kembali ke Karyawan
+            <ArrowLeft className="h-4 w-4" /> Karyawan
           </Link>
-          <h1 className="text-2xl font-bold text-slate-900">Registrasi Wajah Karyawan (3–5 Foto)</h1>
-          <p className="text-sm text-slate-500">
-            Tiap foto dicek otomatis (1 wajah, cukup terang, tidak buram). Foto tidak disimpan — hanya
-            vektor terenkripsi AES-256.
-          </p>
-        </div>
-      </div>
+        }
+        title="Registrasi Wajah"
+        description="Ambil 3 sampai 5 foto. Tiap foto dicek otomatis: satu wajah, cukup terang, tidak buram. Foto tidak disimpan, hanya vektor wajah terenkripsi."
+      />
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="bg-slate-900 rounded-2xl overflow-hidden relative aspect-[4/3]">
-          <video
-            ref={videoRef}
-            autoPlay
-            playsInline
-            muted
-            onLoadedMetadata={(e) => e.currentTarget.play().catch(() => {})}
-            className="w-full h-full object-cover"
-          />
-          <canvas ref={canvasRef} className="hidden" />
-          <div className="absolute bottom-3 left-3 right-3 bg-slate-950/80 text-white px-3.5 py-2 rounded-xl text-xs">
-            Panduan: <strong>{POSES[poseIdx]?.label}</strong>
-          </div>
-        </div>
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
+        {/* Kamera */}
+        <div className="space-y-3">
+          <div className="relative aspect-[4/3] overflow-hidden rounded-xl bg-slate-900">
+            <video
+              ref={videoRef}
+              autoPlay
+              playsInline
+              muted
+              onLoadedMetadata={(e) => e.currentTarget.play().catch(() => {})}
+              className="h-full w-full object-cover"
+            />
+            <canvas ref={canvasRef} className="hidden" />
 
-        <div className="bg-white rounded-2xl border border-slate-200 p-5 flex flex-col justify-between space-y-4">
-          <div className="space-y-3">
-            <div className="font-semibold text-slate-800 flex items-center justify-between">
-              <span>Foto Terkumpul ({captures.length}/5)</span>
-              {captures.length > 0 && !enrolled && (
-                <button
-                  onClick={() => {
-                    setCaptures([]);
-                    setPoseIdx(0);
-                  }}
-                  className="text-xs text-slate-500 hover:text-rose-600 flex items-center gap-1 cursor-pointer"
-                >
-                  <RefreshCw className="w-3 h-3" /> Reset
-                </button>
-              )}
+            {/* Panduan oval wajah */}
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+              <div className="h-[72%] aspect-[4/5] rounded-[50%] border-2 border-dashed border-white/60" />
             </div>
 
-            <div className="grid grid-cols-5 gap-2">
-              {Array.from({ length: 5 }).map((_, i) => {
-                const cap = captures[i];
-                return (
-                  <div
-                    key={i}
-                    className="aspect-square rounded-lg border border-slate-200 bg-slate-50 overflow-hidden flex items-center justify-center text-xs text-slate-400"
-                  >
-                    {cap ? (
-                      <img src={cap.imageBase64} alt={cap.poseLabel} className="w-full h-full object-cover" />
-                    ) : (
-                      <span>#{i + 1}</span>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-
-            {feedback && (
-              <div className="p-3 rounded-lg bg-slate-100 text-slate-800 text-xs">{feedback}</div>
+            {!enrolled && !allTaken && (
+              <div className="absolute inset-x-3 top-3 flex justify-center">
+                <div className="rounded-lg bg-slate-950/80 px-3 py-1.5 text-center text-sm font-semibold text-white">
+                  {currentPose.label}
+                </div>
+              </div>
             )}
 
-            {verifyResult && (
-              <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-medium">
-                {verifyResult}
+            {cameraError && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-slate-900/90 p-6 text-center text-white">
+                <p className="max-w-xs text-sm">{cameraError}</p>
+                <button onClick={retryCamera} className="btn btn-secondary btn-sm">
+                  <RefreshCw className="h-3.5 w-3.5" /> Nyalakan ulang kamera
+                </button>
               </div>
             )}
           </div>
 
-          <div className="space-y-2.5">
-            {!enrolled ? (
-              <>
-                <button
-                  onClick={handleCapturePose}
-                  disabled={checking || captures.length >= 5}
-                  className="w-full py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
-                >
-                  <Camera className="w-4 h-4" />
-                  {checking ? "Mengecek Kualitas..." : `Ambil Foto (${POSES[poseIdx]?.label})`}
-                </button>
-                <button
-                  onClick={handleEnrollSubmit}
-                  disabled={checking || captures.length < 3}
-                  className="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
-                >
-                  <ShieldCheck className="w-4 h-4" />
-                  Enkripsi &amp; Simpan Vektor ({captures.length} foto)
-                </button>
-              </>
-            ) : (
-              <button
-                onClick={handleVerifyTest}
-                disabled={checking}
-                className="w-full py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium flex items-center justify-center gap-2 cursor-pointer"
-              >
-                <CheckCircle2 className="w-4 h-4" />
-                Uji Coba Pengenalan Wajah Sekarang
+          {!enrolled ? (
+            <button
+              onClick={handleCapturePose}
+              disabled={checking || allTaken || !!cameraError}
+              className="btn btn-dark w-full py-3"
+            >
+              <Camera className="h-4 w-4" />
+              {checking ? "Mengecek kualitas..." : allTaken ? "Semua pose sudah diambil" : "Ambil foto"}
+            </button>
+          ) : (
+            <button onClick={handleVerifyTest} disabled={checking || !!cameraError} className="btn btn-dark w-full py-3">
+              <CheckCircle2 className="h-4 w-4" />
+              {checking ? "Mencocokkan..." : "Uji pengenalan wajah"}
+            </button>
+          )}
+        </div>
+
+        {/* Langkah */}
+        <div className="card flex flex-col">
+          <div className="card-header">
+            <h2 className="card-title">
+              Foto terkumpul <span className="text-slate-500">{captures.length}/{POSES.length}</span>
+            </h2>
+            {captures.length > 0 && !enrolled && (
+              <button onClick={reset} className="btn btn-ghost btn-sm">
+                <RefreshCw className="h-3.5 w-3.5" /> Ulangi
               </button>
+            )}
+          </div>
+
+          <ol className="flex-1 divide-y divide-slate-100">
+            {POSES.map((p, i) => {
+              const cap = captures[i];
+              const isCurrent = !enrolled && i === captures.length;
+              return (
+                <li
+                  key={p.key}
+                  aria-current={isCurrent ? "step" : undefined}
+                  className={`flex items-center gap-3 px-4 py-2.5 sm:px-5 ${isCurrent ? "bg-brand-50/60" : ""}`}
+                >
+                  <div className="h-11 w-11 shrink-0 overflow-hidden rounded-lg bg-slate-100">
+                    {cap ? (
+                      <img src={cap.imageBase64} alt="" className="h-full w-full object-cover" />
+                    ) : (
+                      <div className="flex h-full w-full items-center justify-center text-xs font-semibold text-slate-400">
+                        {i + 1}
+                      </div>
+                    )}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className={`text-sm ${isCurrent ? "font-semibold text-slate-900" : "text-slate-700"}`}>
+                      {p.label}
+                    </div>
+                    <div className="text-xs text-slate-500">
+                      {cap
+                        ? `Kualitas ${(cap.qualityScore * 100).toFixed(0)}%`
+                        : p.optional
+                        ? "Opsional"
+                        : "Wajib"}
+                    </div>
+                  </div>
+                  {cap && <Check className="h-4 w-4 shrink-0 text-brand-700" aria-label="Sudah diambil" />}
+                </li>
+              );
+            })}
+          </ol>
+
+          <div className="space-y-3 border-t border-slate-200 p-4 sm:p-5">
+            {notice && <Alert tone={notice.tone}>{notice.text}</Alert>}
+            {verify && <Alert tone={verify.matched ? "success" : "warning"}>{verify.text}</Alert>}
+
+            {!enrolled && (
+              <button
+                onClick={handleEnrollSubmit}
+                disabled={checking || captures.length < MIN_PHOTOS}
+                className="btn btn-primary w-full"
+              >
+                <ShieldCheck className="h-4 w-4" />
+                {captures.length < MIN_PHOTOS
+                  ? `Ambil ${MIN_PHOTOS - captures.length} foto lagi`
+                  : `Enkripsi & simpan ${captures.length} foto`}
+              </button>
+            )}
+            {enrolled && (
+              <Link to="/employees" className="btn btn-secondary w-full">
+                Selesai, kembali ke daftar karyawan
+              </Link>
             )}
           </div>
         </div>

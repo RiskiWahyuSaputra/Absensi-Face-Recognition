@@ -1,1 +1,145 @@
 @import "tailwindcss";
+
+@theme {
+  /* Plus Jakarta Sans: typeface buatan Indonesia (Tokotype), angka tabular rapi untuk jam absensi */
+  --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+
+  /* Satu warna merek. 700 dipakai untuk tombol agar teks putih lolos kontras AA (5.5:1) */
+  --color-brand-50: #ecfdf5;
+  --color-brand-100: #d1fae5;
+  --color-brand-200: #a7f3d0;
+  --color-brand-300: #6ee7b7;
+  --color-brand-400: #34d399;
+  --color-brand-500: #10b981;
+  --color-brand-600: #059669;
+  --color-brand-700: #047857;
+  --color-brand-800: #065f46;
+  --color-brand-900: #064e3b;
+}
+
+@layer base {
+  html {
+    -webkit-tap-highlight-color: transparent;
+  }
+  body {
+    @apply bg-slate-50 text-slate-900 antialiased;
+    font-feature-settings: "tnum" 1;
+  }
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-brand-600;
+  }
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+}
+
+@layer components {
+  /* Buttons */
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold
+      transition-colors disabled:cursor-not-allowed disabled:opacity-50 whitespace-nowrap;
+  }
+  .btn-sm {
+    @apply px-3 py-1.5 text-xs gap-1.5;
+  }
+  .btn-primary {
+    @apply bg-brand-700 text-white hover:bg-brand-800;
+  }
+  .btn-secondary {
+    @apply bg-white text-slate-700 ring-1 ring-inset ring-slate-300 hover:bg-slate-50;
+  }
+  .btn-dark {
+    @apply bg-slate-900 text-white hover:bg-slate-800;
+  }
+  .btn-danger {
+    @apply bg-rose-600 text-white hover:bg-rose-700;
+  }
+  .btn-danger-soft {
+    @apply bg-rose-50 text-rose-700 hover:bg-rose-100;
+  }
+  .btn-ghost {
+    @apply text-slate-600 hover:bg-slate-100 hover:text-slate-900;
+  }
+
+  /* Surfaces */
+  .card {
+    @apply rounded-xl border border-slate-200 bg-white;
+  }
+  .card-header {
+    @apply flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-4 py-3.5 sm:px-5;
+  }
+  .card-title {
+    @apply text-sm font-semibold text-slate-900;
+  }
+
+  /* Forms */
+  .field-label {
+    @apply mb-1.5 block text-xs font-semibold text-slate-700;
+  }
+  .input {
+    @apply block w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900
+      placeholder:text-slate-400 transition-colors
+      focus:border-brand-600 focus:outline-none focus:ring-2 focus:ring-brand-600/20;
+  }
+
+  /* Tables: kartu bertumpuk di layar kecil, tabel biasa mulai md */
+  .data-table {
+    @apply w-full text-left text-sm;
+  }
+  .data-table thead th {
+    @apply bg-slate-50 px-4 py-3 text-xs font-semibold text-slate-500 sm:px-5;
+  }
+  .data-table tbody td {
+    @apply px-4 py-3 align-top sm:px-5;
+  }
+  .data-table tbody tr {
+    @apply border-t border-slate-100;
+  }
+
+  @media (max-width: 767px) {
+    .data-table thead {
+      display: none;
+    }
+    .data-table,
+    .data-table tbody,
+    .data-table tr {
+      display: block;
+      width: 100%;
+    }
+    .data-table tbody tr {
+      @apply px-4 py-3;
+    }
+    /* Label di kolom kiri, semua isi sel bertumpuk di kolom kanan */
+    .data-table tbody td {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      justify-items: end;
+      @apply gap-x-4 px-0 py-1 text-right;
+    }
+    .data-table tbody td[data-label]::before {
+      content: attr(data-label);
+      grid-column: 1;
+      grid-row: 1 / span 6;
+      justify-self: start;
+      @apply pt-0.5 text-left text-xs font-medium text-slate-500;
+    }
+    .data-table tbody td[data-label] > * {
+      grid-column: 2;
+    }
+    .data-table tbody td.cell-primary {
+      justify-items: normal;
+      @apply block pb-2 text-left;
+    }
+    .data-table tbody td.cell-actions {
+      @apply flex flex-wrap justify-start pt-2.5 text-left;
+    }
+    .data-table tbody td.cell-actions:empty {
+      display: none;
+    }
+    .data-table tbody td.cell-empty {
+      justify-items: normal;
+      @apply block text-center;
+    }
+  }
+}

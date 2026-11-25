@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from "react";
-import { ShieldAlert, Trash2, Plus, Activity } from "lucide-react";
+import { Check, Copy, Pencil, Plus, ShieldAlert, Trash2 } from "lucide-react";
 import { apiFetch } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
+import { Alert, ConfirmDialog, Notice, PageHeader, TableMessage } from "../components/ui";
+import { errMsg, fmtDateTime } from "../lib/format";
 
 interface KioskRow {
   id: string;
@@ -33,30 +35,36 @@ export const AdminItPage: React.FC = () => {
   const { user } = useAuth();
   const isItAdmin = user?.role === "it_admin";
 
-  const [kiosks, setKiosks] = useState<KioskRow[]>([]);
+  const [kiosks, setKiosks] = useState<KioskRow[] | null>(null);
   const [settings, setSettings] = useState<SettingRow[]>([]);
-  const [faceHealth, setFaceHealth] = useState<Record<string, string>>({});
-  const [auditLogs, setAuditLogs] = useState<AuditRow[]>([]);
-  const [newTokenBanner, setNewTokenBanner] = useState("");
-  const [kioskForm, setKioskForm] = useState({
-    deviceCode: "",
-    name: "",
-    location: "",
-    rateLimitPerMin: 60,
-  });
+  const [faceHealth, setFaceHealth] = useState<Record<string, string> | null>(null);
+  const [auditLogs, setAuditLogs] = useState<AuditRow[] | null>(null);
+  const [notice, setNotice] = useState<Notice>(null);
+  const [newToken, setNewToken] = useState("");
+  const [copied, setCopied] = useState(false);
+  const [kioskForm, setKioskForm] = useState({ deviceCode: "", name: "", location: "", rateLimitPerMin: 60 });
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const [editing, setEditing] = useState<{ key: string; value: string } | null>(null);
+  const [revokeTarget, setRevokeTarget] = useState<KioskRow | null>(null);
+  const [confirmCleanup, setConfirmCleanup] = useState(false);
 
   async function load() {
-    const [kRes, sRes, aRes] = await Promise.all([
-      apiFetch<{ kiosks: KioskRow[] }>("/admin/kiosks"),
-      apiFetch<{ settings: SettingRow[]; faceServiceHealth: Record<string, string> }>(
-        "/admin/settings"
-      ),
-      apiFetch<{ logs: AuditRow[] }>("/admin/biometric-audit-logs"),
-    ]);
-    setKiosks(kRes.kiosks);
-    setSettings(sRes.settings);
-    setFaceHealth(sRes.faceServiceHealth || {});
-    setAuditLogs(aRes.logs);
+    try {
+      const [kRes, sRes, aRes] = await Promise.all([
+        apiFetch<{ kiosks: KioskRow[] }>("/admin/kiosks"),
+        apiFetch<{ settings: SettingRow[]; faceServiceHealth: Record<string, string> }>("/admin/settings"),
+        apiFetch<{ logs: AuditRow[] }>("/admin/biometric-audit-logs"),
+      ]);
+      setKiosks(kRes.kiosks);
+      setSettings(sRes.settings);
+      setFaceHealth(sRes.faceServiceHealth || {});
+      setAuditLogs(aRes.logs);
+    } catch (e) {
+      setKiosks([]);
+      setAuditLogs([]);
+      setNotice({ tone: "error", text: errMsg(e, "Gagal memuat data admin") });
+    }
   }
 
   useEffect(() => {
@@ -65,121 +73,194 @@ export const AdminItPage: React.FC = () => {
 
   async function createKiosk(e: React.FormEvent) {
     e.preventDefault();
-    const res = await apiFetch<{ kioskToken: string }>("/admin/kiosks", {
-      method: "POST",
-      body: JSON.stringify({
-        ...kioskForm,
-        rateLimitPerMin: Number(kioskForm.rateLimitPerMin),
-      }),
-    });
-    setNewTokenBanner(res.kioskToken);
-    setKioskForm({ deviceCode: "", name: "", location: "", rateLimitPerMin: 60 });
-    load();
+    setBusy("kiosk");
+    try {
+      const res = await apiFetch<{ kioskToken: string }>("/admin/kiosks", {
+        method: "POST",
+        body: JSON.stringify({ ...kioskForm, rateLimitPerMin: Number(kioskForm.rateLimitPerMin) }),
+      });
+      setNewToken(res.kioskToken);
+      setCopied(false);
+      setKioskForm({ deviceCode: "", name: "", location: "", rateLimitPerMin: 60 });
+      load();
+    } catch (err) {
+      setNotice({ tone: "error", text: errMsg(err, "Gagal membuat kiosk") });
+    } finally {
+      setBusy(null);
+    }
   }
 
-  async function revokeKiosk(id: string) {
-    if (!window.confirm("Cabut token perangkat kiosk ini? Tablet tidak akan bisa mengirim absen.")) {
+  async function revokeKiosk() {
+    if (!revokeTarget) return;
+    setBusy("revoke");
+    try {
+      await apiFetch(`/admin/kiosks/${revokeTarget.id}/revoke`, { method: "POST" });
+      setNotice({ tone: "success", text: `Token ${revokeTarget.name} dicabut.` });
+      setRevokeTarget(null);
+      load();
+    } catch (err) {
+      setNotice({ tone: "error", text: errMsg(err, "Gagal mencabut token") });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function saveSetting(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editing) return;
+    const current = settings.find((s) => s.key === editing.key)?.value;
+    if (editing.value.trim() === "" || editing.value === current) {
+      setEditing(null);
       return;
     }
-    await apiFetch(`/admin/kiosks/${id}/revoke`, { method: "POST" });
-    load();
-  }
-
-  async function updateSetting(key: string, currentVal: string) {
-    const nextVal = window.prompt(`Masukkan nilai baru untuk "${key}":`, currentVal);
-    if (!nextVal || nextVal === currentVal) return;
-    await apiFetch(`/admin/settings/${key}`, {
-      method: "PUT",
-      body: JSON.stringify({ value: nextVal }),
-    });
-    load();
+    setBusy("setting");
+    try {
+      await apiFetch(`/admin/settings/${editing.key}`, {
+        method: "PUT",
+        body: JSON.stringify({ value: editing.value.trim() }),
+      });
+      setNotice({ tone: "success", text: `${editing.key} diperbarui menjadi ${editing.value.trim()}.` });
+      setEditing(null);
+      load();
+    } catch (err) {
+      setNotice({ tone: "error", text: errMsg(err, "Gagal menyimpan pengaturan") });
+    } finally {
+      setBusy(null);
+    }
   }
 
   async function triggerCleanup() {
-    const res = await apiFetch<{ deletedCount: number; retentionDays: number }>(
-      "/admin/cleanup-proof-photos",
-      { method: "POST" }
-    );
-    alert(`Pembersihan selesai: ${res.deletedCount} foto > ${res.retentionDays} hari dihapus.`);
+    setBusy("cleanup");
+    try {
+      const res = await apiFetch<{ deletedCount: number; retentionDays: number }>(
+        "/admin/cleanup-proof-photos",
+        { method: "POST" }
+      );
+      setNotice({
+        tone: "success",
+        text: `Pembersihan selesai: ${res.deletedCount} foto lebih dari ${res.retentionDays} hari dihapus.`,
+      });
+    } catch (err) {
+      setNotice({ tone: "error", text: errMsg(err, "Gagal membersihkan foto") });
+    } finally {
+      setBusy(null);
+      setConfirmCleanup(false);
+    }
   }
 
-  return (
-    <div className="space-y-8">
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-900">Admin IT, Perangkat Kiosk &amp; Audit UU PDP</h1>
-          <p className="text-sm text-slate-500">
-            Kelola token kiosk, ambang kecocokan SFace, retensi foto 90 hari, dan log akses data biometrik.
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
-          <div className="px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-xs flex items-center gap-2">
-            <Activity className="w-4 h-4 text-emerald-600" />
-            Face Service: <strong>{faceHealth.status || "unknown"}</strong> (
-            {faceHealth.detector || "-"} / {faceHealth.recognizer || "-"})
-          </div>
-          {isItAdmin && (
-            <button
-              onClick={triggerCleanup}
-              className="px-3.5 py-2 rounded-lg bg-slate-900 text-white text-xs font-medium flex items-center gap-1.5 cursor-pointer"
-            >
-              <Trash2 className="w-3.5 h-3.5" /> Bersihkan Foto &gt; 90 Hari
-            </button>
-          )}
-        </div>
-      </div>
+  async function copyToken() {
+    try {
+      await navigator.clipboard.writeText(newToken);
+      setCopied(true);
+    } catch {
+      setCopied(false);
+    }
+  }
 
-      {newTokenBanner && (
-        <div className="p-4 rounded-xl bg-amber-50 border border-amber-300 text-amber-900 text-sm">
-          <div className="font-bold">Token Kiosk Baru (hanya ditampilkan sekali!):</div>
-          <code className="block mt-1 p-2 bg-white rounded border border-amber-200 select-all">
-            {newTokenBanner}
-          </code>
-        </div>
+  const healthy = faceHealth?.status === "ok" || faceHealth?.status === "healthy";
+
+  return (
+    <div className="space-y-6">
+      <PageHeader
+        title="Admin IT & Audit"
+        description="Token perangkat kiosk, ambang kecocokan wajah, retensi foto, dan log akses data biometrik."
+        actions={
+          isItAdmin && (
+            <button onClick={() => setConfirmCleanup(true)} className="btn btn-secondary">
+              <Trash2 className="h-4 w-4" /> Bersihkan foto &gt; 90 hari
+            </button>
+          )
+        }
+      />
+
+      {notice && (
+        <Alert tone={notice.tone} onClose={() => setNotice(null)}>
+          {notice.text}
+        </Alert>
       )}
 
-      {/* Perangkat Kiosk */}
-      <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-4">
-        <h2 className="font-semibold text-slate-800">Perangkat Tablet Kiosk</h2>
+      {/* Status layanan pengenalan wajah */}
+      <div className="card flex flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3.5 text-sm sm:px-5">
+        <div className="flex items-center gap-2 font-semibold text-slate-900">
+          <span
+            className={`h-2.5 w-2.5 rounded-full ${
+              faceHealth === null ? "bg-slate-300" : healthy ? "bg-brand-600" : "bg-rose-600"
+            }`}
+            aria-hidden
+          />
+          Layanan wajah:{" "}
+          <span className={healthy ? "text-brand-700" : faceHealth === null ? "text-slate-500" : "text-rose-700"}>
+            {faceHealth === null ? "memeriksa..." : faceHealth.status || "tidak diketahui"}
+          </span>
+        </div>
+        {faceHealth && (
+          <div className="text-slate-500">
+            Detektor <span className="font-medium text-slate-700">{faceHealth.detector || "–"}</span> · Pengenal{" "}
+            <span className="font-medium text-slate-700">{faceHealth.recognizer || "–"}</span>
+          </div>
+        )}
+      </div>
+
+      {newToken && (
+        <Alert tone="warning" onClose={() => setNewToken("")}>
+          <div className="font-semibold">Token kiosk baru. Salin sekarang, token hanya ditampilkan sekali.</div>
+          <div className="mt-2 flex flex-col gap-2 sm:flex-row">
+            <code className="min-w-0 flex-1 select-all break-all rounded-md border border-amber-200 bg-white px-3 py-2 font-mono text-xs">
+              {newToken}
+            </code>
+            <button onClick={copyToken} className="btn btn-secondary btn-sm self-start sm:self-auto">
+              {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+              {copied ? "Tersalin" : "Salin"}
+            </button>
+          </div>
+        </Alert>
+      )}
+
+      {/* Perangkat kiosk */}
+      <section className="card overflow-hidden">
+        <div className="card-header">
+          <h2 className="card-title">Perangkat kiosk</h2>
+        </div>
         <div className="overflow-x-auto">
-          <table className="w-full text-sm text-left">
-            <thead className="bg-slate-50 text-slate-600 text-xs uppercase">
+          <table className="data-table">
+            <thead>
               <tr>
-                <th className="px-4 py-2.5">Kode &amp; Nama</th>
-                <th className="px-4 py-2.5">Lokasi</th>
-                <th className="px-4 py-2.5">Rate Limit</th>
-                <th className="px-4 py-2.5">Terakhir Aktif</th>
-                <th className="px-4 py-2.5">Status</th>
-                {isItAdmin && <th className="px-4 py-2.5 text-right">Aksi</th>}
+                <th>Perangkat</th>
+                <th>Lokasi</th>
+                <th>Batas permintaan</th>
+                <th>Terakhir aktif</th>
+                <th>Status</th>
+                {isItAdmin && <th className="text-right">Aksi</th>}
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100">
-              {kiosks.map((k) => (
-                <tr key={k.id}>
-                  <td className="px-4 py-2.5">
-                    <div className="font-medium">{k.name}</div>
-                    <div className="text-xs text-slate-500">{k.device_code}</div>
+            <tbody>
+              {kiosks === null && <TableMessage colSpan={6}>Memuat perangkat...</TableMessage>}
+              {kiosks?.length === 0 && (
+                <TableMessage colSpan={6}>Belum ada perangkat kiosk. Buat token di bawah.</TableMessage>
+              )}
+              {kiosks?.map((k) => (
+                <tr key={k.id} className={k.is_active ? "" : "text-slate-500"}>
+                  <td className="cell-primary">
+                    <div className="font-semibold text-slate-900">{k.name}</div>
+                    <div className="font-mono text-xs text-slate-500">{k.device_code}</div>
                   </td>
-                  <td className="px-4 py-2.5">{k.location}</td>
-                  <td className="px-4 py-2.5 text-xs">{k.rate_limit_per_min}/menit</td>
-                  <td className="px-4 py-2.5 text-xs text-slate-500">
-                    {k.last_seen_at ? new Date(k.last_seen_at).toLocaleString("id-ID") : "Belum pernah"}
+                  <td data-label="Lokasi">{k.location}</td>
+                  <td data-label="Batas">{k.rate_limit_per_min}/menit</td>
+                  <td data-label="Terakhir aktif" className="text-slate-600">
+                    {k.last_seen_at ? fmtDateTime(k.last_seen_at) : "Belum pernah"}
                   </td>
-                  <td className="px-4 py-2.5">
+                  <td data-label="Status">
                     {k.is_active ? (
-                      <span className="text-xs font-medium text-emerald-700">Aktif</span>
+                      <span className="text-sm font-semibold text-brand-700">Aktif</span>
                     ) : (
-                      <span className="text-xs font-medium text-rose-700">Dicabut</span>
+                      <span className="text-sm font-semibold text-rose-700">Dicabut</span>
                     )}
                   </td>
                   {isItAdmin && (
-                    <td className="px-4 py-2.5 text-right">
+                    <td className="cell-actions md:text-right">
                       {k.is_active && (
-                        <button
-                          onClick={() => revokeKiosk(k.id)}
-                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-50 text-rose-700 text-xs cursor-pointer"
-                        >
-                          <ShieldAlert className="w-3.5 h-3.5" /> Cabut Token
+                        <button onClick={() => setRevokeTarget(k)} className="btn btn-danger-soft btn-sm">
+                          <ShieldAlert className="h-3.5 w-3.5" /> Cabut token
                         </button>
                       )}
                     </td>
@@ -191,105 +272,145 @@ export const AdminItPage: React.FC = () => {
         </div>
 
         {isItAdmin && (
-          <form onSubmit={createKiosk} className="pt-4 border-t border-slate-200 grid grid-cols-1 md:grid-cols-4 gap-3">
-            <input
-              required
-              placeholder="Kode (mis. KIOSK-02)"
-              value={kioskForm.deviceCode}
-              onChange={(e) => setKioskForm({ ...kioskForm, deviceCode: e.target.value })}
-              className="px-3 py-2 rounded-lg border border-slate-300 text-sm"
-            />
-            <input
-              required
-              placeholder="Nama Perangkat"
-              value={kioskForm.name}
-              onChange={(e) => setKioskForm({ ...kioskForm, name: e.target.value })}
-              className="px-3 py-2 rounded-lg border border-slate-300 text-sm"
-            />
-            <input
-              required
-              placeholder="Lokasi Pintu"
-              value={kioskForm.location}
-              onChange={(e) => setKioskForm({ ...kioskForm, location: e.target.value })}
-              className="px-3 py-2 rounded-lg border border-slate-300 text-sm"
-            />
-            <button
-              type="submit"
-              className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium flex items-center justify-center gap-1.5 cursor-pointer"
-            >
-              <Plus className="w-4 h-4" /> Buat Token Kiosk
+          <form
+            onSubmit={createKiosk}
+            className="grid gap-3 border-t border-slate-200 bg-slate-50/60 p-4 sm:grid-cols-2 sm:p-5 lg:grid-cols-[1fr_1fr_1fr_auto] lg:items-end"
+          >
+            <div className="text-xs font-semibold text-slate-700 sm:col-span-2 lg:col-span-4">Daftarkan kiosk baru</div>
+            <div>
+              <label htmlFor="k-code" className="field-label">Kode perangkat</label>
+              <input id="k-code" required placeholder="mis. KIOSK-02" value={kioskForm.deviceCode}
+                onChange={(e) => setKioskForm({ ...kioskForm, deviceCode: e.target.value })} className="input" />
+            </div>
+            <div>
+              <label htmlFor="k-name" className="field-label">Nama</label>
+              <input id="k-name" required placeholder="mis. Tablet Lobi" value={kioskForm.name}
+                onChange={(e) => setKioskForm({ ...kioskForm, name: e.target.value })} className="input" />
+            </div>
+            <div>
+              <label htmlFor="k-loc" className="field-label">Lokasi</label>
+              <input id="k-loc" required placeholder="mis. Pintu Timur" value={kioskForm.location}
+                onChange={(e) => setKioskForm({ ...kioskForm, location: e.target.value })} className="input" />
+            </div>
+            <button type="submit" disabled={busy === "kiosk"} className="btn btn-primary">
+              <Plus className="h-4 w-4" /> Buat token
             </button>
           </form>
         )}
-      </div>
+      </section>
 
-      {/* Pengaturan Ambang Kecocokan */}
-      <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-3">
-        <h2 className="font-semibold text-slate-800">Pengaturan Ambang Kecocokan &amp; Aturan</h2>
-        <div className="divide-y divide-slate-100">
-          {settings.map((s) => (
-            <div key={s.key} className="py-2.5 flex items-center justify-between gap-4 text-sm">
-              <div>
-                <div className="font-mono font-medium text-slate-800">{s.key}</div>
-                <div className="text-xs text-slate-500">{s.description}</div>
-              </div>
-              <div className="flex items-center gap-3">
-                <span className="font-mono font-bold text-emerald-700">{s.value}</span>
-                {isItAdmin && (
-                  <button
-                    onClick={() => updateSetting(s.key, s.value)}
-                    className="px-2.5 py-1 rounded bg-slate-100 hover:bg-slate-200 text-xs cursor-pointer"
-                  >
-                    Ubah
-                  </button>
-                )}
-              </div>
-            </div>
-          ))}
+      {/* Pengaturan */}
+      <section className="card overflow-hidden">
+        <div className="card-header">
+          <h2 className="card-title">Ambang kecocokan & aturan</h2>
         </div>
-      </div>
+        <ul className="divide-y divide-slate-100">
+          {settings.map((s) => (
+            <li key={s.key} className="flex flex-col gap-3 px-4 py-3.5 sm:flex-row sm:items-center sm:justify-between sm:px-5">
+              <div className="min-w-0">
+                <div className="text-sm font-semibold text-slate-900">{s.description || s.key}</div>
+                <div className="font-mono text-xs text-slate-500">{s.key}</div>
+              </div>
+              {editing?.key === s.key ? (
+                <form onSubmit={saveSetting} className="flex items-center gap-2">
+                  <label htmlFor={`set-${s.key}`} className="sr-only">Nilai {s.key}</label>
+                  <input
+                    id={`set-${s.key}`}
+                    autoFocus
+                    value={editing.value}
+                    onChange={(e) => setEditing({ key: s.key, value: e.target.value })}
+                    onKeyDown={(e) => e.key === "Escape" && setEditing(null)}
+                    className="input w-32 py-1.5 font-mono"
+                  />
+                  <button type="submit" disabled={busy === "setting"} className="btn btn-primary btn-sm">Simpan</button>
+                  <button type="button" onClick={() => setEditing(null)} className="btn btn-ghost btn-sm">Batal</button>
+                </form>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <span className="rounded-md bg-slate-100 px-2.5 py-1 font-mono text-sm font-semibold text-slate-900">
+                    {s.value}
+                  </span>
+                  {isItAdmin && (
+                    <button
+                      onClick={() => setEditing({ key: s.key, value: s.value })}
+                      aria-label={`Ubah ${s.key}`}
+                      className="btn btn-ghost btn-sm"
+                    >
+                      <Pencil className="h-3.5 w-3.5" /> Ubah
+                    </button>
+                  )}
+                </div>
+              )}
+            </li>
+          ))}
+        </ul>
+      </section>
 
-      {/* Log Akses Data Biometrik (UU PDP) */}
-      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-        <div className="px-5 py-4 border-b border-slate-200 font-semibold text-slate-800">
-          Log Audit Akses Data Biometrik (UU PDP No. 27/2022)
+      {/* Log audit */}
+      <section className="card overflow-hidden">
+        <div className="card-header">
+          <h2 className="card-title">Log akses data biometrik</h2>
+          <span className="text-xs text-slate-500">Wajib dicatat menurut UU PDP No. 27/2022</span>
         </div>
         <div className="overflow-x-auto">
-          <table className="w-full text-xs text-left">
-            <thead className="bg-slate-50 text-slate-600 uppercase">
+          <table className="data-table">
+            <thead>
               <tr>
-                <th className="px-5 py-2.5">Waktu</th>
-                <th className="px-5 py-2.5">Aktor</th>
-                <th className="px-5 py-2.5">Aksi</th>
-                <th className="px-5 py-2.5">Target Karyawan</th>
-                <th className="px-5 py-2.5">IP</th>
+                <th>Aksi</th>
+                <th>Waktu</th>
+                <th>Oleh</th>
+                <th>Data karyawan</th>
+                <th>IP</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100">
-              {auditLogs.map((l) => (
+            <tbody>
+              {auditLogs === null && <TableMessage colSpan={5}>Memuat log audit...</TableMessage>}
+              {auditLogs?.length === 0 && (
+                <TableMessage colSpan={5}>
+                  Belum ada akses data biometrik. Registrasi dan penghapusan wajah akan tercatat di sini.
+                </TableMessage>
+              )}
+              {auditLogs?.map((l) => (
                 <tr key={l.id}>
-                  <td className="px-5 py-2.5 font-mono">
-                    {new Date(l.created_at).toLocaleString("id-ID")}
+                  <td className="cell-primary font-mono text-xs font-semibold text-slate-900">{l.action}</td>
+                  <td data-label="Waktu" className="whitespace-nowrap text-slate-600">{fmtDateTime(l.created_at)}</td>
+                  <td data-label="Oleh">
+                    {l.actor_name || "Sistem"} <span className="text-xs text-slate-500">({l.actor_role})</span>
                   </td>
-                  <td className="px-5 py-2.5">
-                    {l.actor_name || "Sistem"} ({l.actor_role})
-                  </td>
-                  <td className="px-5 py-2.5 font-mono font-medium">{l.action}</td>
-                  <td className="px-5 py-2.5">{l.target_employee_name || "-"}</td>
-                  <td className="px-5 py-2.5 font-mono">{l.ip_address}</td>
+                  <td data-label="Karyawan">{l.target_employee_name || "–"}</td>
+                  <td data-label="IP" className="font-mono text-xs text-slate-600">{l.ip_address}</td>
                 </tr>
               ))}
-              {auditLogs.length === 0 && (
-                <tr>
-                  <td colSpan={5} className="px-5 py-6 text-center text-slate-400">
-                    Belum ada catatan audit biometrik.
-                  </td>
-                </tr>
-              )}
             </tbody>
           </table>
         </div>
-      </div>
+      </section>
+
+      {revokeTarget && (
+        <ConfirmDialog
+          title={`Cabut token ${revokeTarget.name}?`}
+          confirmLabel="Cabut token"
+          danger
+          busy={busy === "revoke"}
+          onConfirm={revokeKiosk}
+          onCancel={() => setRevokeTarget(null)}
+        >
+          Tablet di {revokeTarget.location} tidak akan bisa mengirim absen lagi sampai diberi token baru.
+        </ConfirmDialog>
+      )}
+
+      {confirmCleanup && (
+        <ConfirmDialog
+          title="Bersihkan foto bukti lama?"
+          confirmLabel="Hapus foto lama"
+          danger
+          busy={busy === "cleanup"}
+          onConfirm={triggerCleanup}
+          onCancel={() => setConfirmCleanup(false)}
+        >
+          Semua foto bukti absen yang lebih dari 90 hari akan dihapus permanen. Log absensinya tetap tersimpan.
+        </ConfirmDialog>
+      )}
     </div>
   );
 };

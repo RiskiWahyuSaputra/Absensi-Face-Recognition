@@ -1,9 +1,11 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { Plus, ScanFace, UserMinus, ShieldCheck } from "lucide-react";
+import { Plus, ScanFace, Search, ShieldCheck, UserMinus } from "lucide-react";
 import { apiFetch } from "../lib/api";
 import { StatusBadge } from "../components/StatusBadge";
+import { Alert, ConfirmDialog, Modal, Notice, PageHeader, TableMessage } from "../components/ui";
 import { useAuth } from "../context/AuthContext";
+import { errMsg } from "../lib/format";
 
 interface EmployeeRow {
   id: string;
@@ -24,35 +26,45 @@ interface ShiftOption {
   name: string;
 }
 
+const EMPTY_FORM = {
+  nik: "",
+  fullName: "",
+  email: "",
+  department: "",
+  position: "Staf",
+  role: "employee",
+  shiftId: "",
+  pin: "",
+};
+
 export const EmployeesPage: React.FC = () => {
   const { user } = useAuth();
   const isHrOrIt = user?.role === "hr_admin" || user?.role === "it_admin";
-  const [employees, setEmployees] = useState<EmployeeRow[]>([]);
+  const [employees, setEmployees] = useState<EmployeeRow[] | null>(null);
   const [shifts, setShifts] = useState<ShiftOption[]>([]);
-  const [showCreate, setShowCreate] = useState(false);
-  const [consentTarget, setConsentTarget] = useState<EmployeeRow | null>(null);
-  const [message, setMessage] = useState("");
+  const [notice, setNotice] = useState<Notice>(null);
+  const [query, setQuery] = useState("");
+  const [showInactive, setShowInactive] = useState(false);
 
-  const [form, setForm] = useState({
-    nik: "",
-    fullName: "",
-    email: "",
-    department: "Engineering",
-    position: "Staf",
-    role: "employee",
-    shiftId: "",
-    pin: "123456",
-  });
+  const [showCreate, setShowCreate] = useState(false);
+  const [form, setForm] = useState(EMPTY_FORM);
+  const [formError, setFormError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const [consentTarget, setConsentTarget] = useState<EmployeeRow | null>(null);
+  const [deactivateTarget, setDeactivateTarget] = useState<EmployeeRow | null>(null);
 
   async function loadData() {
-    const [empRes, shiftRes] = await Promise.all([
-      apiFetch<{ employees: EmployeeRow[] }>("/employees?includeInactive=true"),
-      apiFetch<{ shifts: ShiftOption[] }>("/shifts"),
-    ]);
-    setEmployees(empRes.employees);
-    setShifts(shiftRes.shifts);
-    if (shiftRes.shifts.length > 0 && !form.shiftId) {
-      setForm((f) => ({ ...f, shiftId: shiftRes.shifts[0].id }));
+    try {
+      const [empRes, shiftRes] = await Promise.all([
+        apiFetch<{ employees: EmployeeRow[] }>("/employees?includeInactive=true"),
+        apiFetch<{ shifts: ShiftOption[] }>("/shifts"),
+      ]);
+      setEmployees(empRes.employees);
+      setShifts(shiftRes.shifts);
+    } catch (e) {
+      setEmployees([]);
+      setNotice({ tone: "error", text: errMsg(e, "Gagal memuat karyawan") });
     }
   }
 
@@ -60,157 +72,216 @@ export const EmployeesPage: React.FC = () => {
     loadData();
   }, []);
 
+  const rows = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return (employees ?? []).filter(
+      (e) =>
+        (showInactive || e.is_active) &&
+        (!q ||
+          e.full_name.toLowerCase().includes(q) ||
+          e.nik.toLowerCase().includes(q) ||
+          e.department.toLowerCase().includes(q))
+    );
+  }, [employees, query, showInactive]);
+
+  const inactiveCount = employees?.filter((e) => !e.is_active).length ?? 0;
+  const needsFace =
+    employees?.filter((e) => e.is_active && e.biometric_consent_status === "consented" && e.face_vector_count === 0)
+      .length ?? 0;
+
+  function openCreate() {
+    setForm({ ...EMPTY_FORM, shiftId: shifts[0]?.id || "" });
+    setFormError("");
+    setShowCreate(true);
+  }
+
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
-    setMessage("");
+    setFormError("");
+    setBusy(true);
     try {
-      await apiFetch("/employees", {
-        method: "POST",
-        body: JSON.stringify(form),
-      });
+      await apiFetch("/employees", { method: "POST", body: JSON.stringify(form) });
       setShowCreate(false);
-      setForm({
-        nik: "",
-        fullName: "",
-        email: "",
-        department: "Engineering",
-        position: "Staf",
-        role: "employee",
-        shiftId: shifts[0]?.id || "",
-        pin: "123456",
-      });
-      setMessage("Karyawan baru berhasil ditambahkan.");
+      setNotice({ tone: "success", text: `${form.fullName} berhasil ditambahkan.` });
       loadData();
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : "Gagal menambah karyawan");
+      setFormError(errMsg(err, "Gagal menambah karyawan"));
+    } finally {
+      setBusy(false);
     }
   }
 
   async function handleConsent(status: "consented" | "declined_pin_only") {
     if (!consentTarget) return;
-    await apiFetch(`/employees/${consentTarget.id}/biometric-consent`, {
-      method: "POST",
-      body: JSON.stringify({
-        status,
-        note:
+    setBusy(true);
+    try {
+      await apiFetch(`/employees/${consentTarget.id}/biometric-consent`, {
+        method: "POST",
+        body: JSON.stringify({
+          status,
+          note:
+            status === "consented"
+              ? "Formulir persetujuan biometrik UU PDP No. 27/2022 ditandatangani"
+              : "Karyawan memilih alternatif PIN",
+        }),
+      });
+      setNotice({
+        tone: "success",
+        text:
           status === "consented"
-            ? "Formulir persetujuan biometrik UU PDP No. 27/2022 ditandatangani"
-            : "Karyawan memilih alternatif PIN",
-      }),
-    });
-    setConsentTarget(null);
-    loadData();
+            ? `${consentTarget.full_name} menyetujui biometrik. Lanjutkan dengan daftarkan wajah.`
+            : `${consentTarget.full_name} akan absen memakai PIN + foto.`,
+      });
+      setConsentTarget(null);
+      loadData();
+    } catch (err) {
+      setNotice({ tone: "error", text: errMsg(err, "Gagal menyimpan persetujuan") });
+    } finally {
+      setBusy(false);
+    }
   }
 
-  async function handleDeactivate(emp: EmployeeRow) {
-    if (
-      !window.confirm(
-        `Nonaktifkan ${emp.full_name}? Sesuai UU PDP (F-07), seluruh vektor wajah karyawan ini akan dihapus permanen.`
-      )
-    ) {
-      return;
+  async function handleDeactivate() {
+    if (!deactivateTarget) return;
+    setBusy(true);
+    try {
+      const res = await apiFetch<{ message: string }>(`/employees/${deactivateTarget.id}/deactivate`, {
+        method: "POST",
+      });
+      setNotice({ tone: "success", text: res.message });
+      setDeactivateTarget(null);
+      loadData();
+    } catch (err) {
+      setNotice({ tone: "error", text: errMsg(err, "Gagal menonaktifkan karyawan") });
+    } finally {
+      setBusy(false);
     }
-    const res = await apiFetch<{ message: string }>(`/employees/${emp.id}/deactivate`, {
-      method: "POST",
-    });
-    setMessage(res.message);
-    loadData();
   }
+
+  const set = (k: keyof typeof EMPTY_FORM) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
+    setForm({ ...form, [k]: e.target.value });
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-900">Karyawan &amp; Data Biometrik</h1>
-          <p className="text-sm text-slate-500">
-            Kelola data karyawan, persetujuan UU PDP No. 27/2022, dan registrasi vektor wajah terenkripsi.
-          </p>
-        </div>
-        {isHrOrIt && (
-          <button
-            onClick={() => setShowCreate(true)}
-            className="px-4 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium flex items-center gap-2 cursor-pointer"
-          >
-            <Plus className="w-4 h-4" />
-            Tambah Karyawan
-          </button>
-        )}
-      </div>
+      <PageHeader
+        title="Karyawan & Wajah"
+        description="Kelola data karyawan, persetujuan biometrik (UU PDP No. 27/2022), dan registrasi wajah."
+        actions={
+          isHrOrIt && (
+            <button onClick={openCreate} className="btn btn-primary">
+              <Plus className="h-4 w-4" /> Tambah karyawan
+            </button>
+          )
+        }
+      />
 
-      {message && (
-        <div className="p-3.5 rounded-xl bg-emerald-50 text-emerald-800 border border-emerald-200 text-sm">
-          {message}
-        </div>
+      {notice && (
+        <Alert tone={notice.tone} onClose={() => setNotice(null)}>
+          {notice.text}
+        </Alert>
       )}
 
-      <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
+      {isHrOrIt && needsFace > 0 && (
+        <Alert tone="info">
+          {needsFace} karyawan sudah setuju biometrik tapi wajahnya belum didaftarkan.
+        </Alert>
+      )}
+
+      <section className="card overflow-hidden">
+        <div className="card-header">
+          <div className="relative w-full sm:w-72">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Cari nama, NIK, departemen"
+              aria-label="Cari karyawan"
+              className="input py-2 pl-9"
+            />
+          </div>
+          {inactiveCount > 0 && (
+            <label className="inline-flex items-center gap-2 text-sm text-slate-600">
+              <input
+                type="checkbox"
+                checked={showInactive}
+                onChange={(e) => setShowInactive(e.target.checked)}
+                className="h-4 w-4 rounded border-slate-300 accent-brand-700"
+              />
+              Tampilkan nonaktif ({inactiveCount})
+            </label>
+          )}
+        </div>
+
         <div className="overflow-x-auto">
-          <table className="w-full text-sm text-left">
-            <thead className="bg-slate-50 text-slate-600 text-xs uppercase">
+          <table className="data-table">
+            <thead>
               <tr>
-                <th className="px-5 py-3">NIK / Nama</th>
-                <th className="px-5 py-3">Departemen &amp; Shift</th>
-                <th className="px-5 py-3">Persetujuan UU PDP</th>
-                <th className="px-5 py-3">Vektor Wajah</th>
-                <th className="px-5 py-3">Status</th>
-                {isHrOrIt && <th className="px-5 py-3 text-right">Aksi</th>}
+                <th>Karyawan</th>
+                <th>Departemen &amp; shift</th>
+                <th>Biometrik</th>
+                <th>Wajah terdaftar</th>
+                {isHrOrIt && <th className="text-right">Aksi</th>}
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100">
-              {employees.map((emp) => (
-                <tr key={emp.id} className={!emp.is_active ? "opacity-55 bg-slate-50" : ""}>
-                  <td className="px-5 py-3">
-                    <div className="font-medium text-slate-900">{emp.full_name}</div>
+            <tbody>
+              {employees === null && <TableMessage colSpan={5}>Memuat karyawan...</TableMessage>}
+              {employees !== null && rows.length === 0 && (
+                <TableMessage colSpan={5}>
+                  {employees.length === 0
+                    ? "Belum ada karyawan. Klik \"Tambah karyawan\" untuk mulai."
+                    : "Tidak ada karyawan yang cocok dengan pencarian."}
+                </TableMessage>
+              )}
+              {rows.map((emp) => (
+                <tr key={emp.id} className={emp.is_active ? "hover:bg-slate-50/70" : "bg-slate-50 text-slate-500"}>
+                  <td className="cell-primary">
+                    <div className="flex items-center gap-2 font-semibold text-slate-900">
+                      {emp.full_name}
+                      {!emp.is_active && (
+                        <span className="rounded bg-slate-200 px-1.5 py-0.5 text-[11px] font-semibold text-slate-600">
+                          Nonaktif
+                        </span>
+                      )}
+                    </div>
                     <div className="text-xs text-slate-500">
                       {emp.nik} · {emp.email}
                     </div>
                   </td>
-                  <td className="px-5 py-3">
+                  <td data-label="Departemen">
                     <div>{emp.department}</div>
-                    <div className="text-xs text-slate-500">{emp.shift_name || "-"}</div>
+                    <div className="text-xs text-slate-500">{emp.shift_name || "Tanpa shift"}</div>
                   </td>
-                  <td className="px-5 py-3">
+                  <td data-label="Biometrik">
                     <StatusBadge value={emp.biometric_consent_status} />
                   </td>
-                  <td className="px-5 py-3 font-mono text-xs">
-                    {emp.face_vector_count > 0 ? `${emp.face_vector_count} vektor (AES-256)` : "Belum terdaftar"}
-                  </td>
-                  <td className="px-5 py-3">
-                    {emp.is_active ? (
-                      <span className="text-xs text-emerald-700 font-medium">Aktif</span>
+                  <td data-label="Wajah">
+                    {emp.face_vector_count > 0 ? (
+                      <span className="text-sm font-medium text-slate-900">{emp.face_vector_count} foto</span>
                     ) : (
-                      <span className="text-xs text-rose-700 font-medium">Nonaktif</span>
+                      <span className="text-sm text-slate-400">Belum</span>
                     )}
                   </td>
                   {isHrOrIt && (
-                    <td className="px-5 py-3 text-right space-x-2 whitespace-nowrap">
+                    <td className="cell-actions md:text-right">
                       {emp.is_active && (
-                        <>
-                          <button
-                            onClick={() => setConsentTarget(emp)}
-                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-xs font-medium text-slate-700 cursor-pointer"
-                          >
-                            <ShieldCheck className="w-3.5 h-3.5" />
-                            Persetujuan
-                          </button>
+                        <div className="flex flex-wrap gap-2 md:justify-end">
                           {emp.biometric_consent_status === "consented" && (
-                            <Link
-                              to={`/employees/${emp.id}/enroll`}
-                              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-xs font-medium text-white"
-                            >
-                              <ScanFace className="w-3.5 h-3.5" />
-                              Daftarkan Wajah
+                            <Link to={`/employees/${emp.id}/enroll`} className="btn btn-primary btn-sm">
+                              <ScanFace className="h-3.5 w-3.5" />
+                              {emp.face_vector_count > 0 ? "Daftar ulang" : "Daftarkan wajah"}
                             </Link>
                           )}
-                          <button
-                            onClick={() => handleDeactivate(emp)}
-                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-xs font-medium text-rose-700 cursor-pointer"
-                            title="Nonaktifkan & hapus data wajah (F-07)"
-                          >
-                            <UserMinus className="w-3.5 h-3.5" />
-                            Nonaktifkan
+                          <button onClick={() => setConsentTarget(emp)} className="btn btn-secondary btn-sm">
+                            <ShieldCheck className="h-3.5 w-3.5" /> Persetujuan
                           </button>
-                        </>
+                          <button
+                            onClick={() => setDeactivateTarget(emp)}
+                            className="btn btn-ghost btn-sm text-rose-700 hover:bg-rose-50 hover:text-rose-800"
+                          >
+                            <UserMinus className="h-3.5 w-3.5" /> Nonaktifkan
+                          </button>
+                        </div>
                       )}
                     </td>
                   )}
@@ -219,144 +290,113 @@ export const EmployeesPage: React.FC = () => {
             </tbody>
           </table>
         </div>
-      </div>
+      </section>
 
-      {/* Modal Tambah Karyawan */}
       {showCreate && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-6">
-            <h2 className="text-lg font-bold mb-4">Tambah Karyawan Baru</h2>
-            <form onSubmit={handleCreate} className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">NIK</label>
-                <input
-                  required
-                  value={form.nik}
-                  onChange={(e) => setForm({ ...form, nik: e.target.value })}
-                  className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
-                />
+        <Modal title="Tambah karyawan" size="lg" onClose={() => setShowCreate(false)}>
+          <form onSubmit={handleCreate} className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            {formError && (
+              <div className="sm:col-span-2">
+                <Alert tone="error">{formError}</Alert>
               </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">Nama Lengkap</label>
-                <input
-                  required
-                  value={form.fullName}
-                  onChange={(e) => setForm({ ...form, fullName: e.target.value })}
-                  className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
-                />
-              </div>
-              <div className="col-span-2">
-                <label className="block text-xs font-medium text-slate-600 mb-1">Email</label>
-                <input
-                  type="email"
-                  required
-                  value={form.email}
-                  onChange={(e) => setForm({ ...form, email: e.target.value })}
-                  className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">Departemen</label>
-                <input
-                  value={form.department}
-                  onChange={(e) => setForm({ ...form, department: e.target.value })}
-                  className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">Shift</label>
-                <select
-                  value={form.shiftId}
-                  onChange={(e) => setForm({ ...form, shiftId: e.target.value })}
-                  className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
-                >
-                  {shifts.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">Peran</label>
-                <select
-                  value={form.role}
-                  onChange={(e) => setForm({ ...form, role: e.target.value })}
-                  className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
-                >
-                  <option value="employee">Karyawan</option>
-                  <option value="supervisor">Atasan</option>
-                  <option value="hr_admin">Admin HR</option>
-                  <option value="it_admin">Admin IT</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">PIN Fallback (6 digit)</label>
-                <input
-                  required
-                  pattern="\d{6}"
-                  value={form.pin}
-                  onChange={(e) => setForm({ ...form, pin: e.target.value })}
-                  className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm font-mono"
-                />
-              </div>
-              <div className="col-span-2 flex justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setShowCreate(false)}
-                  className="px-4 py-2 rounded-lg bg-slate-100 text-sm cursor-pointer"
-                >
-                  Batal
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium cursor-pointer"
-                >
-                  Simpan
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+            )}
+            <div>
+              <label htmlFor="f-nik" className="field-label">NIK</label>
+              <input id="f-nik" required value={form.nik} onChange={set("nik")} placeholder="mis. EMP-010" className="input" />
+            </div>
+            <div>
+              <label htmlFor="f-name" className="field-label">Nama lengkap</label>
+              <input id="f-name" required value={form.fullName} onChange={set("fullName")} className="input" />
+            </div>
+            <div className="sm:col-span-2">
+              <label htmlFor="f-email" className="field-label">Email kantor</label>
+              <input id="f-email" type="email" required value={form.email} onChange={set("email")} placeholder="nama@kantor.local" className="input" />
+            </div>
+            <div>
+              <label htmlFor="f-dept" className="field-label">Departemen</label>
+              <input id="f-dept" required value={form.department} onChange={set("department")} className="input" />
+            </div>
+            <div>
+              <label htmlFor="f-pos" className="field-label">Jabatan</label>
+              <input id="f-pos" value={form.position} onChange={set("position")} className="input" />
+            </div>
+            <div>
+              <label htmlFor="f-shift" className="field-label">Shift</label>
+              <select id="f-shift" value={form.shiftId} onChange={set("shiftId")} className="input">
+                {shifts.map((s) => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label htmlFor="f-role" className="field-label">Peran</label>
+              <select id="f-role" value={form.role} onChange={set("role")} className="input">
+                <option value="employee">Karyawan</option>
+                <option value="supervisor">Atasan</option>
+                <option value="hr_admin">Admin HR</option>
+                <option value="it_admin">Admin IT</option>
+              </select>
+            </div>
+            <div className="sm:col-span-2">
+              <label htmlFor="f-pin" className="field-label">PIN cadangan (6 angka)</label>
+              <input
+                id="f-pin"
+                required
+                inputMode="numeric"
+                pattern="\d{6}"
+                maxLength={6}
+                value={form.pin}
+                onChange={set("pin")}
+                className="input font-mono tracking-widest sm:w-40"
+              />
+              <p className="mt-1.5 text-xs text-slate-500">Dipakai saat wajah tidak dikenali atau karyawan menolak biometrik.</p>
+            </div>
+            <div className="flex flex-col-reverse gap-2 pt-2 sm:col-span-2 sm:flex-row sm:justify-end">
+              <button type="button" onClick={() => setShowCreate(false)} className="btn btn-secondary">Batal</button>
+              <button type="submit" disabled={busy} className="btn btn-primary">{busy ? "Menyimpan..." : "Simpan karyawan"}</button>
+            </div>
+          </form>
+        </Modal>
       )}
 
-      {/* Modal Formulir Persetujuan Biometrik UU PDP No. 27/2022 */}
       {consentTarget && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-6 space-y-4">
-            <h2 className="text-lg font-bold">Persetujuan Data Biometrik (UU PDP No. 27/2022)</h2>
-            <p className="text-sm text-slate-600">
-              Karyawan: <strong>{consentTarget.full_name}</strong> ({consentTarget.nik})
-            </p>
-            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-700 space-y-1.5">
-              <p>1. Hanya vektor matematika wajah (terenkripsi AES-256) yang disimpan di server internal perusahaan.</p>
-              <p>2. Foto registrasi langsung dihapus setelah ekstraksi vektor selesai.</p>
-              <p>3. Foto bukti absen harian dihapus otomatis setelah 90 hari.</p>
-              <p>4. Seluruh data wajah dihapus permanen saat karyawan keluar/dinonaktifkan.</p>
-              <p>5. Karyawan berhak menolak dan menggunakan alternatif PIN + foto.</p>
-            </div>
-            <div className="flex gap-3 pt-2">
-              <button
-                onClick={() => handleConsent("declined_pin_only")}
-                className="flex-1 py-2.5 rounded-lg bg-amber-100 hover:bg-amber-200 text-amber-900 text-sm font-medium cursor-pointer"
-              >
-                Tolak Biometrik (Pakai PIN)
-              </button>
-              <button
-                onClick={() => handleConsent("consented")}
-                className="flex-1 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium cursor-pointer"
-              >
-                Setujui Registrasi Wajah
-              </button>
-            </div>
-            <button
-              onClick={() => setConsentTarget(null)}
-              className="w-full py-2 text-xs text-slate-500 hover:text-slate-700 cursor-pointer"
-            >
-              Tutup
+        <Modal
+          title="Persetujuan data biometrik"
+          description={`${consentTarget.full_name} · ${consentTarget.nik}`}
+          size="lg"
+          onClose={() => setConsentTarget(null)}
+        >
+          <p className="text-sm text-slate-600">Sampaikan poin berikut ke karyawan sesuai UU PDP No. 27/2022:</p>
+          <ol className="mt-3 list-decimal space-y-2 rounded-lg bg-slate-50 py-4 pl-9 pr-4 text-sm text-slate-700">
+            <li>Yang disimpan hanya vektor wajah terenkripsi AES-256 di server internal.</li>
+            <li>Foto registrasi dihapus begitu vektor selesai dibuat.</li>
+            <li>Foto bukti absen harian dihapus otomatis setelah 90 hari.</li>
+            <li>Semua data wajah dihapus permanen saat karyawan keluar atau dinonaktifkan.</li>
+            <li>Karyawan berhak menolak dan tetap bisa absen dengan PIN + foto.</li>
+          </ol>
+          <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            <button onClick={() => handleConsent("declined_pin_only")} disabled={busy} className="btn btn-secondary">
+              Menolak, pakai PIN
+            </button>
+            <button onClick={() => handleConsent("consented")} disabled={busy} className="btn btn-primary">
+              Setuju, daftarkan wajah
             </button>
           </div>
-        </div>
+        </Modal>
+      )}
+
+      {deactivateTarget && (
+        <ConfirmDialog
+          title={`Nonaktifkan ${deactivateTarget.full_name}?`}
+          confirmLabel="Nonaktifkan & hapus data wajah"
+          danger
+          busy={busy}
+          onConfirm={handleDeactivate}
+          onCancel={() => setDeactivateTarget(null)}
+        >
+          Karyawan tidak bisa absen lagi, dan sesuai UU PDP seluruh vektor wajahnya akan{" "}
+          <strong className="text-slate-900">dihapus permanen</strong>. Riwayat absensi tetap tersimpan.
+        </ConfirmDialog>
       )}
     </div>
   );

@@ -1,39 +1,41 @@
 import React from "react";
 
 const STYLES: Record<string, string> = {
-  on_time: "bg-emerald-100 text-emerald-800",
-  late: "bg-amber-100 text-amber-800",
-  early_leave: "bg-orange-100 text-orange-800",
-  approved: "bg-emerald-100 text-emerald-800",
-  rejected: "bg-rose-100 text-rose-800",
-  pending: "bg-slate-200 text-slate-700",
-  consented: "bg-emerald-100 text-emerald-800",
-  declined_pin_only: "bg-amber-100 text-amber-800",
-  face: "bg-sky-100 text-sky-800",
-  pin_fallback: "bg-purple-100 text-purple-800",
-  manual_correction: "bg-indigo-100 text-indigo-800",
+  on_time: "bg-brand-50 text-brand-800 ring-brand-600/20",
+  late: "bg-amber-50 text-amber-800 ring-amber-600/25",
+  early_leave: "bg-orange-50 text-orange-800 ring-orange-600/25",
+  absent: "bg-rose-50 text-rose-700 ring-rose-600/20",
+  approved: "bg-brand-50 text-brand-800 ring-brand-600/20",
+  rejected: "bg-rose-50 text-rose-700 ring-rose-600/20",
+  pending: "bg-slate-100 text-slate-700 ring-slate-500/20",
+  consented: "bg-brand-50 text-brand-800 ring-brand-600/20",
+  declined_pin_only: "bg-amber-50 text-amber-800 ring-amber-600/25",
+  face: "bg-sky-50 text-sky-800 ring-sky-600/20",
+  pin_fallback: "bg-violet-50 text-violet-800 ring-violet-600/20",
+  manual_correction: "bg-indigo-50 text-indigo-800 ring-indigo-600/20",
 };
 
 const LABELS: Record<string, string> = {
   on_time: "Tepat Waktu",
   late: "Terlambat",
   early_leave: "Pulang Cepat",
+  absent: "Belum Hadir",
   approved: "Disetujui",
   rejected: "Ditolak",
   pending: "Menunggu",
-  consented: "Disetujui (Wajah)",
-  declined_pin_only: "Alternatif PIN",
+  consented: "Setuju (Wajah)",
+  declined_pin_only: "Pakai PIN",
   face: "Wajah",
-  pin_fallback: "Fallback PIN",
+  pin_fallback: "PIN + Foto",
   manual_correction: "Koreksi",
 };
 
 export const StatusBadge: React.FC<{ value: string | null | undefined }> = ({ value }) => {
-  if (!value) return <span className="text-slate-400 text-xs">-</span>;
+  if (!value) return <span className="text-xs text-slate-400">–</span>;
   return (
     <span
-      className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-        STYLES[value] || "bg-slate-100 text-slate-700"
+      className={`inline-flex items-center whitespace-nowrap rounded-md px-2 py-0.5 text-xs font-semibold ring-1 ring-inset ${
+        STYLES[value] || "bg-slate-100 text-slate-700 ring-slate-500/20"
       }`}
     >
       {LABELS[value] || value}
