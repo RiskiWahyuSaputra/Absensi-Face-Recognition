@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Build outputs
+dist/
+build/
+
+# Environment & secrets
+.env
+.env.local
+*.key
+*.pem
+
+# Local storage & models
+storage/
+face-service/models/*.onnx
+*.log
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/

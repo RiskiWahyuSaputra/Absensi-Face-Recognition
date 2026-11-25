@@ -1,0 +1,99 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: absensi_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-absensi_face}
+      POSTGRES_USER: ${POSTGRES_USER:-absensi_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_this_strong_db_password}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    networks:
+      - internal_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-absensi_user} -d ${POSTGRES_DB:-absensi_face}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  face-service:
+    build:
+      context: ./face-service
+      dockerfile: Dockerfile
+    container_name: absensi_face_service
+    restart: unless-stopped
+    environment:
+      FACE_SERVICE_API_KEY: ${FACE_SERVICE_API_KEY:-internal_face_service_shared_secret}
+      LIVENESS_THRESHOLD: ${DEFAULT_LIVENESS_THRESHOLD:-0.50}
+      MODEL_DIR: /app/models
+    volumes:
+      - face_models:/app/models
+    networks:
+      - internal_net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: absensi_backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      face-service:
+        condition: service_healthy
+    environment:
+      PORT: 4000
+      NODE_ENV: ${NODE_ENV:-production}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-absensi_user}:${POSTGRES_PASSWORD:-change_this_strong_db_password}@postgres:5432/${POSTGRES_DB:-absensi_face}
+      FACE_ENCRYPTION_KEY: ${FACE_ENCRYPTION_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
+      JWT_SECRET: ${JWT_SECRET:-change_this_to_a_very_long_random_jwt_secret_string}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-12h}
+      FACE_SERVICE_URL: http://face-service:8000
+      FACE_SERVICE_API_KEY: ${FACE_SERVICE_API_KEY:-internal_face_service_shared_secret}
+      DEFAULT_MATCH_THRESHOLD: ${DEFAULT_MATCH_THRESHOLD:-0.45}
+      DEFAULT_LIVENESS_THRESHOLD: ${DEFAULT_LIVENESS_THRESHOLD:-0.50}
+      DUPLICATE_WINDOW_MINUTES: ${DUPLICATE_WINDOW_MINUTES:-5}
+      CHECKOUT_MIN_HOURS: ${CHECKOUT_MIN_HOURS:-4}
+      PROOF_PHOTO_RETENTION_DAYS: ${PROOF_PHOTO_RETENTION_DAYS:-90}
+      STORAGE_DIR: /app/storage/proofs
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:8080}
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-60}
+    volumes:
+      - proof_photos:/app/storage/proofs
+    networks:
+      - internal_net
+      - edge_net
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: absensi_frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "8080:80"
+    networks:
+      - edge_net
+
+networks:
+  # Jaringan internal: PostgreSQL dan Face Service tidak terekspos ke internet
+  internal_net:
+    driver: bridge
+    internal: false
+  edge_net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  face_models:
+  proof_photos:
